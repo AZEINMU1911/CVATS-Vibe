@@ -2,6 +2,7 @@
 
 - **In-memory persistence fallback** — The API writes CV metadata with Prisma when `DATABASE_URL` is configured. When it is undefined (local dev/tests), we switch to an in-memory repository so the dashboard stays usable without MongoDB.
 - **Unsigned Cloudinary uploads** — Client uploads rely on `NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET` only; the hook throws early if the preset or cloud name is missing so secrets never end up in the bundle.
-- **Stub user identity** — Until authentication lands, uploads are associated with the constant `STUB_USER_ID`. This keeps the schema ergonomics while making it trivial to migrate to real user IDs later.
+- **Auth stub** — Until real auth ships, a cookie (`cvats_user_email`) simulates the signed-in email. Requests respect the cookie, and tests exercise multiple users to ensure scoping.
 - **Playwright interception** — End-to-end tests intercept Cloudinary network calls and return a canned payload, ensuring tests are deterministic and do not hit external services.
 - **Keyword scoring** — Analysis v1 uses a deterministic keyword matcher (case-insensitive, duplicate-safe). It favors explainability over ML accuracy and returns matched keywords so the UI can highlight gaps. DOCX parsing is stubbed until a lightweight dependency is vetted.
+- **Pagination & deletion** — The dashboard keeps the first 10 CVs in view with a "Load more" affordance and performs optimistic deletes after confirmation. We refill the list client-side and lean on repository pagination so future filtering/sorting can slot in.

@@ -1,11 +1,14 @@
 "use client";
 
 import type { FormEvent, ReactNode, RefObject } from "react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useUploadToCloudinary, type UploadStatus } from "@/hooks/use-upload-to-cloudinary";
 import { validateFile } from "@/lib/validate-file";
 import { useAnalyze } from "@/hooks/use-analyze";
+import { useCvList } from "@/hooks/use-cv-list";
+import Swal from "sweetalert2";
+import { getActiveUserEmail } from "@/lib/auth-client";
 
 interface CvSummary {
   id: string;
@@ -33,6 +36,11 @@ interface UploadFormProps {
 interface CvListProps {
   cvs: CvSummary[];
   fetchState: FetchState;
+  nextCursor?: string | null;
+  isLoadingMore: boolean;
+  loadMore: () => Promise<void> | void;
+  deleteCv: (id: string) => Promise<boolean>;
+  errorMessage?: string | null;
 }
 
 const formatBytes = (bytes: number): string => {
@@ -241,9 +249,11 @@ const CvListMessage = ({ tone, children }: { tone: "loading" | "error"; children
     tone === "loading"
       ? "border border-dashed border-slate-200 bg-slate-50 text-slate-500 dark:border-slate-700 dark:bg-slate-800/40 dark:text-slate-300"
       : "border border-red-200 bg-red-50 text-red-700 dark:border-red-500/40 dark:bg-red-500/10 dark:text-red-200";
+  const role = tone === "error" ? "alert" : "status";
+  const ariaLive = tone === "error" ? "assertive" : "polite";
 
   return (
-    <p className={`mt-8 rounded-2xl px-4 py-6 text-center text-sm ${style}`}>
+    <p role={role} aria-live={ariaLive} className={`mt-8 rounded-2xl px-4 py-6 text-center text-sm ${style}`}>
       {children}
     </p>
   );
@@ -258,8 +268,29 @@ const CvEmptyState = () => (
   </div>
 );
 
-const CvCard = ({ cv }: { cv: CvSummary }) => {
+const CvCard = ({ cv, onDelete }: { cv: CvSummary; onDelete: (id: string) => Promise<boolean> }) => {
   const { analyses, status, error, analyze } = useAnalyze(cv.id);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
+  const confirmButtonId = `delete-confirm-${cv.id}`;
+  const cancelButtonId = `delete-cancel-${cv.id}`;
+
+  const handleDelete = async () => {
+    setIsDeleting(true);
+    try {
+      const deleted = await onDelete(cv.id);
+      if (!deleted) {
+        setShowConfirm(false);
+        throw new Error("CV not found or already deleted.");
+      }
+      setShowConfirm(false);
+    } catch (err) {
+      console.error(err);
+      setShowConfirm(false);
+    } finally {
+      setIsDeleting(false);
+    }
+  };
 
   return (
     <li className="group transform rounded-2xl border border-slate-200 bg-white px-5 py-4 text-sm transition hover:-translate-y-1 hover:border-blue-200 hover:shadow-lg dark:border-slate-700 dark:bg-slate-900/60">
@@ -277,16 +308,26 @@ const CvCard = ({ cv }: { cv: CvSummary }) => {
             {formatTimestamp(cv.uploadedAt)}
           </span>
         </div>
-        <button
-          type="button"
-          onClick={() => {
-            void analyze();
-          }}
-          disabled={status === "running"}
-          className="inline-flex items-center justify-center rounded-full bg-blue-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-blue-300 dark:bg-blue-500 dark:hover:bg-blue-400"
-        >
-          {status === "running" ? "Analyzing…" : "Analyze"}
-        </button>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              void analyze();
+            }}
+            disabled={status === "running" || isDeleting}
+            className="inline-flex items-center justify-center rounded-full bg-blue-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-blue-300 dark:bg-blue-500 dark:hover:bg-blue-400"
+          >
+            {status === "running" ? "Analyzing…" : "Analyze"}
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowConfirm(true)}
+            disabled={isDeleting || status === "running"}
+            className="inline-flex items-center justify-center rounded-full bg-red-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-red-500 disabled:cursor-not-allowed disabled:bg-red-300"
+          >
+            {isDeleting ? "Deleting…" : "Delete"}
+          </button>
+        </div>
       </div>
       <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-slate-500 dark:text-slate-300">
         <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1 font-medium text-slate-600 dark:bg-slate-800/80 dark:text-slate-200">
@@ -305,6 +346,38 @@ const CvCard = ({ cv }: { cv: CvSummary }) => {
         <p className="mt-4 rounded-2xl bg-red-50 px-4 py-3 text-xs text-red-600 dark:bg-red-500/10 dark:text-red-200">
           {error}
         </p>
+      ) : null}
+      {showConfirm ? (
+        <div
+          role="alertdialog"
+          aria-modal="false"
+          aria-labelledby={confirmButtonId}
+          aria-describedby={cancelButtonId}
+          className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs text-slate-700 dark:border-slate-600 dark:bg-slate-800/70 dark:text-slate-200"
+        >
+          <p className="font-semibold">Delete {cv.fileName}?</p>
+          <p id={cancelButtonId} className="mt-1 text-[11px]">
+            This removes the CV metadata permanently.
+          </p>
+          <div className="mt-3 flex gap-2">
+            <button
+              id={confirmButtonId}
+              type="button"
+              onClick={() => void handleDelete()}
+              disabled={isDeleting}
+              className="inline-flex items-center justify-center rounded-full bg-red-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-red-500 disabled:cursor-not-allowed disabled:bg-red-300"
+            >
+              {isDeleting ? "Deleting…" : "Confirm delete"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowConfirm(false)}
+              className="inline-flex items-center justify-center rounded-full border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-600 transition hover:border-slate-400 hover:text-slate-800 dark:border-slate-600 dark:text-slate-200"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
       ) : null}
       {analyses.length > 0 ? (
         <div className="mt-4 space-y-3">
@@ -344,29 +417,55 @@ const CvCard = ({ cv }: { cv: CvSummary }) => {
   );
 };
 
-const CvList = ({ cvs, fetchState }: CvListProps) => (
+const CvList = ({
+  cvs,
+  fetchState,
+  nextCursor,
+  isLoadingMore,
+  loadMore,
+  deleteCv,
+  errorMessage,
+}: CvListProps) => (
   <CvListShell>
     <CvListHeader />
     {fetchState === "loading" && (
       <CvListMessage tone="loading">Loading existing uploads…</CvListMessage>
     )}
-    {fetchState === "error" && (
-      <CvListMessage tone="error">We could not load your CVs. Please refresh to try again.</CvListMessage>
+    {(fetchState === "error" || errorMessage) && (
+      <CvListMessage tone="error">
+        {errorMessage ?? "We could not load your CVs. Please refresh to try again."}
+      </CvListMessage>
     )}
     {fetchState === "idle" && cvs.length === 0 && <CvEmptyState />}
     {cvs.length > 0 && (
-      <ul className="mt-8 space-y-4">
-        {cvs.map((cv) => (
-          <CvCard key={cv.id} cv={cv} />
-        ))}
-      </ul>
+      <>
+        <ul className="mt-8 space-y-4">
+          {cvs.map((cv) => (
+            <CvCard key={cv.id} cv={cv} onDelete={deleteCv} />
+          ))}
+        </ul>
+        {nextCursor ? (
+          <div className="mt-6 flex justify-center">
+            <button
+              type="button"
+              className="inline-flex items-center justify-center rounded-full bg-slate-900 px-5 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-600"
+              onClick={() => {
+                void loadMore();
+              }}
+              disabled={isLoadingMore}
+            >
+              {isLoadingMore ? "Loading…" : "Load more"}
+            </button>
+          </div>
+        ) : null}
+      </>
     )}
   </CvListShell>
 );
 
 export default function DashboardPage() {
-  const [cvs, setCvs] = useState<CvSummary[]>([]);
-  const [fetchState, setFetchState] = useState<FetchState>("loading");
+  const { cvs, fetchState, nextCursor, isLoadingMore, loadMore, deleteCv, refresh, error } =
+    useCvList();
   const [clientError, setClientError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [selectedFileInfo, setSelectedFileInfo] = useState<{ name: string; size: number } | null>(
@@ -382,27 +481,6 @@ export default function DashboardPage() {
       totalLabel: formatBytes(totalBytes),
     };
   }, [cvs]);
-
-  const loadCvs = useCallback(async () => {
-    setFetchState("loading");
-    try {
-      const response = await fetch("/api/uploads", { cache: "no-store" });
-      if (!response.ok) {
-        throw new Error("Failed to load CVs.");
-      }
-
-      const data = (await response.json()) as { cvs?: CvSummary[] };
-      setCvs(Array.isArray(data.cvs) ? data.cvs : []);
-      setFetchState("idle");
-    } catch (err) {
-      console.error(err);
-      setFetchState("error");
-    }
-  }, []);
-
-  useEffect(() => {
-    void loadCvs();
-  }, [loadCvs]);
 
   const handleFileChange = useCallback(() => {
     setClientError(null);
@@ -454,6 +532,7 @@ export default function DashboardPage() {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
+            "x-user-email": getActiveUserEmail(),
           },
           body: JSON.stringify({
             fileUrl: cloudinary.fileUrl,
@@ -470,18 +549,25 @@ export default function DashboardPage() {
         }
 
         const payload = (await response.json()) as { cv: CvSummary };
-        setCvs((existing) => [payload.cv, ...existing]);
+        void refresh({ prepend: payload.cv });
         setSuccessMessage(`Uploaded ${payload.cv.fileName}.`);
         if (fileInputRef.current) {
           fileInputRef.current.value = "";
         }
         setSelectedFileInfo(null);
+        void Swal.fire({
+          title: "Upload successful",
+          text: `${payload.cv.fileName} is ready for analysis.`,
+          icon: "success",
+          timer: 1600,
+          showConfirmButton: false,
+        });
       } catch (err) {
         const message = err instanceof Error ? err.message : "Unexpected upload failure.";
         setClientError(message);
       }
     },
-    [upload],
+    [refresh, upload],
   );
 
   const statusMessage = useMemo(
@@ -534,7 +620,15 @@ export default function DashboardPage() {
           selectedFileSize={selectedFileSize}
         />
 
-        <CvList cvs={cvs} fetchState={fetchState} />
+      <CvList
+        cvs={cvs}
+        fetchState={fetchState}
+        nextCursor={nextCursor ?? null}
+        isLoadingMore={isLoadingMore}
+        loadMore={loadMore}
+        deleteCv={deleteCv}
+        errorMessage={error}
+      />
       </main>
     </div>
   );

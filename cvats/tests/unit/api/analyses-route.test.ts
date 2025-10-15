@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { POST } from "@/app/api/analyses/route";
-import { cvRepository, resetCvRepository, STUB_USER_ID } from "@/server/cv-repository";
+import { cvRepository, resetCvRepository } from "@/server/cv-repository";
 import { analysisRepository, resetAnalysisRepository } from "@/server/analysis-repository";
+import { AUTH_COOKIE_NAME } from "@/lib/auth-constants";
+import { getUserIdByEmail } from "@/server/auth";
 
 vi.mock("@/server/analysis/text-extractor", () => ({
   extractTextFromFile: vi.fn(async (url: string, mime: string) => {
@@ -12,6 +14,10 @@ vi.mock("@/server/analysis/text-extractor", () => ({
 }));
 
 const { extractTextFromFile } = await import("@/server/analysis/text-extractor");
+
+const USER_EMAIL = "analysis@example.com";
+const cookieHeader = `${AUTH_COOKIE_NAME}=${USER_EMAIL}`;
+const userId = getUserIdByEmail(USER_EMAIL);
 
 describe("POST /api/analyses", () => {
   beforeEach(() => {
@@ -26,7 +32,7 @@ describe("POST /api/analyses", () => {
   it("returns 404 when cvId does not exist", async () => {
     const request = new Request("http://localhost/api/analyses", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", cookie: cookieHeader },
       body: JSON.stringify({ cvId: "missing" }),
     });
 
@@ -35,7 +41,7 @@ describe("POST /api/analyses", () => {
   });
 
   it("creates analysis and returns score", async () => {
-    const cv = await cvRepository.createForUser(STUB_USER_ID, {
+    const cv = await cvRepository.createForUser(userId, {
       fileName: "sample.pdf",
       fileUrl: "https://example.com/sample.pdf",
       fileSize: 1024,
@@ -45,7 +51,7 @@ describe("POST /api/analyses", () => {
 
     const request = new Request("http://localhost/api/analyses", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", cookie: cookieHeader },
       body: JSON.stringify({ cvId: cv.id }),
     });
 
@@ -65,7 +71,7 @@ describe("POST /api/analyses", () => {
   it("returns score 0 when text is empty (docx stub)", async () => {
     vi.mocked(extractTextFromFile).mockResolvedValueOnce(" ");
 
-    const cv = await cvRepository.createForUser(STUB_USER_ID, {
+    const cv = await cvRepository.createForUser(userId, {
       fileName: "sample.docx",
       fileUrl: "https://example.com/sample.docx",
       fileSize: 1024,
@@ -75,7 +81,7 @@ describe("POST /api/analyses", () => {
 
     const request = new Request("http://localhost/api/analyses", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", cookie: cookieHeader },
       body: JSON.stringify({ cvId: cv.id }),
     });
 

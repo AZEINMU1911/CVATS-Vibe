@@ -1,5 +1,8 @@
 import path from "node:path";
 import { expect, test } from "@playwright/test";
+import type { Page } from "@playwright/test";
+
+const getCvItems = (page: Page) => page.locator("main li");
 
 test("landing page renders marketing content", async ({ page }) => {
   await page.goto("/");
@@ -8,7 +11,7 @@ test("landing page renders marketing content", async ({ page }) => {
 });
 
 test("dashboard route shows placeholder state", async ({ page }) => {
-  await page.goto("/dashboard");
+  await page.goto("/dashboard?as=alice@example.com");
   await expect(page.getByRole("heading", { name: "My CVs", level: 1 })).toBeVisible();
   await expect(page.getByText("Drop your resume here")).toBeVisible();
   await expect(page.getByRole("button", { name: "Save to CVs" })).toBeVisible();
@@ -27,14 +30,64 @@ test("dashboard upload persists Cloudinary metadata", async ({ page }) => {
     });
   });
 
-  await page.goto("/dashboard");
+  await page.route("**/api/uploads", async (route) => {
+    if (route.request().method() === "DELETE") {
+      await route.fulfill({ status: 204, body: "" });
+      return;
+    }
+
+    await route.continue();
+  });
+
+  await page.route("**/api/analyses", async (route) => {
+    if (route.request().method() === "POST") {
+      await route.fulfill({
+        status: 201,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          analysis: {
+            id: "test-analysis",
+            cvId: route.request().postDataJSON()?.cvId ?? "cv",
+            score: 100,
+            keywordsMatched: ["javascript", "react", "node", "typescript", "nextjs"],
+            message: null,
+            createdAt: new Date().toISOString(),
+          },
+        }),
+      });
+      return;
+    }
+
+    await route.continue();
+  });
+
+  await page.goto("/dashboard?as=alice@example.com");
   const fixturePath = path.resolve(__dirname, "../fixtures/sample.pdf");
   await page.setInputFiles('input[type="file"]', fixturePath);
+  const uploadResponsePromise = page.waitForResponse((response) =>
+    response.url().includes("/api/uploads") && response.request().method() === "POST",
+  );
   await page.getByRole("button", { name: "Save to CVs" }).click();
+  const uploadResponse = await uploadResponsePromise;
+  expect(uploadResponse.status()).toBe(201);
 
-  await expect(page.getByRole("link", { name: "sample.pdf" }).first()).toBeVisible();
+  await expect(page.getByRole("link", { name: "sample.pdf" }).first()).toBeVisible({ timeout: 10000 });
   await expect(page.getByText("Cloudinary ID: cvats/sample").first()).toBeVisible();
-  await page.getByRole("button", { name: "Analyze" }).first().click();
-  await expect(page.getByText(/Score:/i)).toBeVisible();
-  await expect(page.getByText("javascript", { exact: false })).toBeVisible();
+  const newestCard = page.locator("main li").first();
+  await newestCard.getByRole("button", { name: "Analyze" }).click();
+  await expect(newestCard.getByText(/Score:/i)).toBeVisible({ timeout: 12000 });
+  await expect(newestCard.getByText("javascript", { exact: false })).toBeVisible();
+
+  const items = getCvItems(page);
+  const countBeforeDelete = await items.count();
+  await newestCard.getByRole("button", { name: "Delete" }).click();
+  await newestCard.getByRole("button", { name: "Confirm delete" }).click();
+  await expect(items).toHaveCount(countBeforeDelete - 1);
+
+  // Switch to another user and ensure scoped list is empty
+  await page.goto("/dashboard?as=bob@example.com");
+  await page.waitForResponse((response) =>
+    response.url().includes("/api/uploads") && response.request().method() === "GET",
+  );
+  await expect(page.getByText("No uploads yet", { exact: false })).toBeVisible();
 });

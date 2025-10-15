@@ -1,4 +1,6 @@
 import { useCallback, useState } from "react";
+import Swal from "sweetalert2";
+import { getActiveUserEmail } from "@/lib/auth-client";
 
 export interface AnalysisResult {
   id: string;
@@ -33,7 +35,9 @@ export const useAnalyze = (cvId: string) => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          "x-user-email": getActiveUserEmail(),
         },
+        credentials: "include",
         body: JSON.stringify({ cvId, keywords }),
       }).catch(() => null);
 
@@ -53,6 +57,14 @@ export const useAnalyze = (cvId: string) => {
       const analysis = payload.analysis;
       setAnalyses((current) => [analysis, ...current]);
       setStatus("idle");
+      void Swal.fire({
+        title: "Analysis complete",
+        text: "Analaysis complete",
+        icon: "success",
+        confirmButtonText: "Great",
+        timer: 1500,
+        showConfirmButton: false,
+      });
     },
     [cvId],
   );
