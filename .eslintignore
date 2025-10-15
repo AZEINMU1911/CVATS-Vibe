@@ -1,0 +1,9 @@
+node_modules/
+.next/
+out/
+.vercel/
+dist/
+coverage/
+playwright-report/
+test-results/
+tests/fixtures/**
