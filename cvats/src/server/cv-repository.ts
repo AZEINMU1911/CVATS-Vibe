@@ -25,6 +25,8 @@ export interface CvRepository {
   listForUser(userId: string): Promise<CvRecord[]>;
   createForUser(userId: string, input: CreateCvInput): Promise<CvRecord>;
   findById(id: string): Promise<CvRecord | null>;
+  deleteById(id: string, userId: string): Promise<boolean>;
+  listPage(userId: string, limit: number, cursor?: string): Promise<{ items: CvRecord[]; nextCursor?: string | null }>;
   reset?: () => void;
 }
 
@@ -76,6 +78,30 @@ const createPrismaRepository = (): CvRepository => {
       const record = await prisma.cV.findUnique({ where: { id } });
       return record ? mapCv(record) : null;
     },
+    async deleteById(id, userId) {
+      const existing = await prisma.cV.findUnique({ where: { id } });
+      if (!existing || existing.userId !== userId) {
+        return false;
+      }
+      await prisma.cV.delete({ where: { id } });
+      return true;
+    },
+    async listPage(userId, limit, cursor) {
+      const query: Parameters<typeof prisma.cV.findMany>[0] = {
+        where: { userId },
+        orderBy: { uploadedAt: "desc" },
+        take: limit + 1,
+      };
+      if (cursor) {
+        query.cursor = { id: cursor };
+        query.skip = 1;
+      }
+      const rows = await prisma.cV.findMany(query);
+      const items = rows.slice(0, limit).map(mapCv);
+      const nextItem = rows.length > limit ? rows[limit] : null;
+      const nextCursor = nextItem?.id ?? null;
+      return { items, nextCursor };
+    },
   };
 };
 
@@ -110,6 +136,29 @@ const createMemoryRepository = (): CvRepository => {
         }
       }
       return null;
+    },
+    async deleteById(id, userId) {
+      const items = itemsByUser.get(userId);
+      if (!items) {
+        return false;
+      }
+      const index = items.findIndex((item) => item.id === id);
+      if (index === -1) {
+        return false;
+      }
+      items.splice(index, 1);
+      return true;
+    },
+    async listPage(userId, limit, cursor) {
+      const items = itemsByUser.get(userId) ?? [];
+      const startIndex = cursor ? items.findIndex((item) => item.id === cursor) + 1 : 0;
+      const safeStart = startIndex < 0 ? 0 : startIndex;
+      const page = items.slice(safeStart, safeStart + limit);
+      const nextItem = items[safeStart + limit];
+      return {
+        items: page,
+        nextCursor: nextItem?.id ?? null,
+      };
     },
     reset() {
       itemsByUser.clear();

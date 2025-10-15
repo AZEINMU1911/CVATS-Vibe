@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { POST } from "@/app/api/uploads/route";
+import { DELETE, POST } from "@/app/api/uploads/route";
 import { resetCvRepository } from "@/server/cv-repository";
 
 describe("POST /api/uploads", () => {
@@ -35,5 +35,14 @@ describe("POST /api/uploads", () => {
     expect(response.status).toBe(201);
     const payload = (await response.json()) as { cv: { fileName: string } };
     expect(payload.cv.fileName).toBe("candidate.pdf");
+  });
+
+  it("returns 404 when deleting unknown CV", async () => {
+    const request = new Request("http://localhost/api/uploads?id=missing", {
+      method: "DELETE",
+    });
+
+    const response = await DELETE(request);
+    expect(response.status).toBe(404);
   });
 });

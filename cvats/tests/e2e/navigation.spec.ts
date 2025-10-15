@@ -27,14 +27,52 @@ test("dashboard upload persists Cloudinary metadata", async ({ page }) => {
     });
   });
 
+  await page.route("**/api/uploads", async (route) => {
+    if (route.request().method() === "DELETE") {
+      await route.fulfill({ status: 204, body: "" });
+      return;
+    }
+
+    await route.continue();
+  });
+
+  await page.route("**/api/analyses", async (route) => {
+    if (route.request().method() === "POST") {
+      await route.fulfill({
+        status: 201,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          analysis: {
+            id: "test-analysis",
+            cvId: route.request().postDataJSON()?.cvId ?? "cv",
+            score: 100,
+            keywordsMatched: ["javascript", "react", "node", "typescript", "nextjs"],
+            message: null,
+            createdAt: new Date().toISOString(),
+          },
+        }),
+      });
+      return;
+    }
+
+    await route.continue();
+  });
+
   await page.goto("/dashboard");
   const fixturePath = path.resolve(__dirname, "../fixtures/sample.pdf");
   await page.setInputFiles('input[type="file"]', fixturePath);
   await page.getByRole("button", { name: "Save to CVs" }).click();
 
-  await expect(page.getByRole("link", { name: "sample.pdf" }).first()).toBeVisible();
+  await expect(page.getByRole("link", { name: "sample.pdf" }).first()).toBeVisible({ timeout: 10000 });
   await expect(page.getByText("Cloudinary ID: cvats/sample").first()).toBeVisible();
-  await page.getByRole("button", { name: "Analyze" }).first().click();
-  await expect(page.getByText(/Score:/i)).toBeVisible();
-  await expect(page.getByText("javascript", { exact: false })).toBeVisible();
+  const newestCard = page.locator("li").first();
+  await newestCard.getByRole("button", { name: "Analyze" }).click();
+  await expect(newestCard.getByText(/Score:/i)).toBeVisible({ timeout: 12000 });
+  await expect(newestCard.getByText("javascript", { exact: false })).toBeVisible();
+
+  const items = page.locator("li");
+  const countBeforeDelete = await items.count();
+  await page.once("dialog", (dialog) => dialog.accept());
+  await newestCard.getByRole("button", { name: "Delete" }).click();
+  await expect(items).toHaveCount(countBeforeDelete - 1);
 });

@@ -51,7 +51,36 @@ export async function POST(request: Request) {
   return NextResponse.json({ cv: created }, { status: 201 });
 }
 
-export async function GET() {
-  const cvs = await cvRepository.listForUser(STUB_USER_ID);
-  return NextResponse.json({ cvs }, { status: 200 });
+const getPaginationParams = (request: Request) => {
+  const { searchParams } = new URL(request.url);
+  const limit = Number.parseInt(searchParams.get("limit") ?? "10", 10);
+  const cursor = searchParams.get("cursor") ?? undefined;
+  const safeLimit = Number.isFinite(limit) && limit > 0 && limit <= 50 ? limit : 10;
+  return { limit: safeLimit, cursor };
+};
+
+export async function GET(request: Request) {
+  const { limit, cursor } = getPaginationParams(request);
+  const { items, nextCursor } = await cvRepository.listPage(STUB_USER_ID, limit, cursor);
+  return NextResponse.json({ cvs: items, nextCursor }, { status: 200 });
+}
+
+const deleteSchema = z.object({
+  id: z.string().min(1),
+});
+
+export async function DELETE(request: Request) {
+  const { searchParams } = new URL(request.url);
+  const rawId = searchParams.get("id");
+  const parsed = deleteSchema.safeParse({ id: rawId });
+  if (!parsed.success) {
+    return NextResponse.json({ error: "id query param is required" }, { status: 400 });
+  }
+
+  const deleted = await cvRepository.deleteById(parsed.data.id, STUB_USER_ID);
+  if (!deleted) {
+    return NextResponse.json({ error: "CV not found" }, { status: 404 });
+  }
+
+  return new NextResponse(null, { status: 204 });
 }
