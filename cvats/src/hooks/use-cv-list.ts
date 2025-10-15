@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Swal from "sweetalert2";
+import { getActiveUserEmail } from "@/lib/auth-client";
 
 export interface CvListItem {
   id: string;
@@ -41,7 +42,12 @@ export const useCvList = () => {
         params.set("cursor", cursor);
       }
 
-      const response = await fetch(`/api/uploads?${params.toString()}`);
+      const response = await fetch(`/api/uploads?${params.toString()}`, {
+        credentials: "include",
+        headers: {
+          "x-user-email": getActiveUserEmail(),
+        },
+      });
       if (!response.ok) {
         throw new Error("Failed to load CVs");
       }
@@ -103,6 +109,10 @@ export const useCvList = () => {
     async (id: string) => {
       const response = await fetch(`/api/uploads?id=${encodeURIComponent(id)}`, {
         method: "DELETE",
+        credentials: "include",
+        headers: {
+          "x-user-email": getActiveUserEmail(),
+        },
       });
       if (response.status === 204) {
         setItems((current) => current.filter((item) => item.id !== id));

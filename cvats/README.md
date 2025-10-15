@@ -51,3 +51,4 @@ Vitest covers utility and API logic (including upload validation and persistence
 - The dashboard list shows CVs in reverse-chronological order with a page size of 10 and a **Load more** control to paginate.
 - Each entry exposes **Analyze** and **Delete** actions; delete prompts for confirmation and updates the list immediately.
 - Empty, loading, and error states use accessible status/alert messaging so assistive tech announces changes.
+- Authentication is stubbed via the `cvats_user_email` cookie. Use `?as=user@example.com` in the URL (or the SweetAlert prompts) to impersonate a different user locally. All uploads/analyses are scoped to the current cookie.

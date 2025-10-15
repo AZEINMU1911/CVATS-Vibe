@@ -8,6 +8,7 @@ import { validateFile } from "@/lib/validate-file";
 import { useAnalyze } from "@/hooks/use-analyze";
 import { useCvList } from "@/hooks/use-cv-list";
 import Swal from "sweetalert2";
+import { getActiveUserEmail } from "@/lib/auth-client";
 
 interface CvSummary {
   id: string;
@@ -531,6 +532,7 @@ export default function DashboardPage() {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
+            "x-user-email": getActiveUserEmail(),
           },
           body: JSON.stringify({
             fileUrl: cloudinary.fileUrl,

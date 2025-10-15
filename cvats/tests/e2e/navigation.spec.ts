@@ -1,7 +1,8 @@
 import path from "node:path";
 import { expect, test } from "@playwright/test";
+import type { Page } from "@playwright/test";
 
-const getCvItems = (page: Parameters<typeof test>[0]["page"]) => page.locator("main li");
+const getCvItems = (page: Page) => page.locator("main li");
 
 test("landing page renders marketing content", async ({ page }) => {
   await page.goto("/");
@@ -10,7 +11,7 @@ test("landing page renders marketing content", async ({ page }) => {
 });
 
 test("dashboard route shows placeholder state", async ({ page }) => {
-  await page.goto("/dashboard");
+  await page.goto("/dashboard?as=alice@example.com");
   await expect(page.getByRole("heading", { name: "My CVs", level: 1 })).toBeVisible();
   await expect(page.getByText("Drop your resume here")).toBeVisible();
   await expect(page.getByRole("button", { name: "Save to CVs" })).toBeVisible();
@@ -60,14 +61,19 @@ test("dashboard upload persists Cloudinary metadata", async ({ page }) => {
     await route.continue();
   });
 
-  await page.goto("/dashboard");
+  await page.goto("/dashboard?as=alice@example.com");
   const fixturePath = path.resolve(__dirname, "../fixtures/sample.pdf");
   await page.setInputFiles('input[type="file"]', fixturePath);
+  const uploadResponsePromise = page.waitForResponse((response) =>
+    response.url().includes("/api/uploads") && response.request().method() === "POST",
+  );
   await page.getByRole("button", { name: "Save to CVs" }).click();
+  const uploadResponse = await uploadResponsePromise;
+  expect(uploadResponse.status()).toBe(201);
 
   await expect(page.getByRole("link", { name: "sample.pdf" }).first()).toBeVisible({ timeout: 10000 });
   await expect(page.getByText("Cloudinary ID: cvats/sample").first()).toBeVisible();
-  const newestCard = page.locator("li").first();
+  const newestCard = page.locator("main li").first();
   await newestCard.getByRole("button", { name: "Analyze" }).click();
   await expect(newestCard.getByText(/Score:/i)).toBeVisible({ timeout: 12000 });
   await expect(newestCard.getByText("javascript", { exact: false })).toBeVisible();
@@ -77,4 +83,11 @@ test("dashboard upload persists Cloudinary metadata", async ({ page }) => {
   await newestCard.getByRole("button", { name: "Delete" }).click();
   await newestCard.getByRole("button", { name: "Confirm delete" }).click();
   await expect(items).toHaveCount(countBeforeDelete - 1);
+
+  // Switch to another user and ensure scoped list is empty
+  await page.goto("/dashboard?as=bob@example.com");
+  await page.waitForResponse((response) =>
+    response.url().includes("/api/uploads") && response.request().method() === "GET",
+  );
+  await expect(page.getByText("No uploads yet", { exact: false })).toBeVisible();
 });
