@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { validateFile, type FileDescriptor } from "@/lib/validate-file";
 
 const createFile = (overrides: Partial<FileDescriptor> = {}): FileDescriptor => ({
@@ -7,11 +7,25 @@ const createFile = (overrides: Partial<FileDescriptor> = {}): FileDescriptor => 
   ...overrides,
 });
 
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
 describe("validateFile", () => {
   it("accepts files that comply with defaults", () => {
     const result = validateFile(createFile());
     expect(result.ok).toBe(true);
     expect(result.error).toBeUndefined();
+  });
+
+  it("accepts DOCX files when allowed", () => {
+    const docxResult = validateFile(
+      createFile({
+        type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        size: 2 * 1_048_576,
+      }),
+    );
+    expect(docxResult.ok).toBe(true);
   });
 
   it("rejects files with disallowed mime types", () => {

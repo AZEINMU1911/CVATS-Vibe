@@ -13,6 +13,16 @@ export default defineConfig({
     port: 3000,
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
+    env: {
+      NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME:
+        process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME ?? "demo",
+      NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET:
+        process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET ?? "unsigned",
+      NEXT_PUBLIC_MAX_FILE_MB: process.env.NEXT_PUBLIC_MAX_FILE_MB ?? "8",
+      NEXT_PUBLIC_ALLOWED_MIME:
+        process.env.NEXT_PUBLIC_ALLOWED_MIME ??
+        "application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    },
   },
   projects: [
     {
