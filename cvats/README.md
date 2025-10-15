@@ -9,7 +9,7 @@ npm install
 npm run dev
 ```
 
-Visit `http://localhost:3000` for the marketing site and `http://localhost:3000/dashboard` for the dashboard placeholder.
+Visit `http://localhost:3000` for the marketing site and `http://localhost:3000/dashboard` to upload resumes and review the saved metadata.
 
 ### Available Scripts
 
@@ -18,14 +18,24 @@ Visit `http://localhost:3000` for the marketing site and `http://localhost:3000/
 - `npm run lint` — run ESLint with the project rules.
 - `npm run typecheck` — TypeScript no-emit verification.
 - `npm run test` — execute Vitest unit/API tests.
-- `npm run e2e` — run Playwright end-to-end tests (auto-starts the dev server).
+- `npm run e2e` — run Playwright end-to-end tests (auto-starts the dev server and intercepts Cloudinary uploads).
 - `npm run db:push` — sync Prisma schema to MongoDB.
 - `npm run db:studio` — open Prisma Studio for data inspection.
 
 ### Environment
 
-Copy `.env.example` to `.env.local` and supply values for MongoDB and Cloudinary. Client uploads must use the unsigned Cloudinary preset; the server stores only the resulting URL and metadata.
+Copy `.env.example` to `.env.local` and supply values for MongoDB and Cloudinary. Client uploads use an unsigned Cloudinary preset (no secrets in the browser). The server persists Cloudinary metadata for a stub user in MongoDB when `DATABASE_URL` is defined, or in an in-memory store otherwise.
+
+Expose the following variables (see `.env.example`):
+
+```
+DATABASE_URL="mongodb+srv://..."
+CLOUDINARY_CLOUD_NAME="your-cloud-name"
+CLOUDINARY_UPLOAD_PRESET="unsigned-preset"
+NEXT_PUBLIC_MAX_FILE_MB=8
+NEXT_PUBLIC_ALLOWED_MIME=application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document
+```
 
 ### Testing Notes
 
-Vitest covers utility and API logic. Playwright validates core navigation flows. CI executes linting, type checking, unit tests, and e2e tests on every push.
+Vitest covers utility and API logic (including upload validation and persistence). Playwright validates marketing navigation and the Cloudinary → metadata flow using a stubbed upload response. CI executes linting, type checking, unit tests, and e2e tests on every push.

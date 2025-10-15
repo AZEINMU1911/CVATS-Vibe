@@ -22,6 +22,7 @@ model CV {
   user        User       @relation(fields: [userId], references: [id], onDelete: Cascade)
   fileName    String
   fileUrl     String
+  publicId    String?
   fileSize    Int
   mimeType    String
   analyses    Analysis[]
