@@ -1,6 +1,8 @@
 import path from "node:path";
 import { expect, test } from "@playwright/test";
 
+const getCvItems = (page: Parameters<typeof test>[0]["page"]) => page.locator("main li");
+
 test("landing page renders marketing content", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "Understand every resume at a glance." })).toBeVisible();
@@ -70,9 +72,9 @@ test("dashboard upload persists Cloudinary metadata", async ({ page }) => {
   await expect(newestCard.getByText(/Score:/i)).toBeVisible({ timeout: 12000 });
   await expect(newestCard.getByText("javascript", { exact: false })).toBeVisible();
 
-  const items = page.locator("li");
+  const items = getCvItems(page);
   const countBeforeDelete = await items.count();
-  await page.once("dialog", (dialog) => dialog.accept());
   await newestCard.getByRole("button", { name: "Delete" }).click();
+  await newestCard.getByRole("button", { name: "Confirm delete" }).click();
   await expect(items).toHaveCount(countBeforeDelete - 1);
 });

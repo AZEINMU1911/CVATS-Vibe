@@ -7,6 +7,7 @@ import { useUploadToCloudinary, type UploadStatus } from "@/hooks/use-upload-to-
 import { validateFile } from "@/lib/validate-file";
 import { useAnalyze } from "@/hooks/use-analyze";
 import { useCvList } from "@/hooks/use-cv-list";
+import Swal from "sweetalert2";
 
 interface CvSummary {
   id: string;
@@ -269,20 +270,22 @@ const CvEmptyState = () => (
 const CvCard = ({ cv, onDelete }: { cv: CvSummary; onDelete: (id: string) => Promise<boolean> }) => {
   const { analyses, status, error, analyze } = useAnalyze(cv.id);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
+  const confirmButtonId = `delete-confirm-${cv.id}`;
+  const cancelButtonId = `delete-cancel-${cv.id}`;
+
   const handleDelete = async () => {
-    const confirmed = window.confirm(`Delete ${cv.fileName}? This cannot be undone.`);
-    if (!confirmed) {
-      return;
-    }
     setIsDeleting(true);
     try {
       const deleted = await onDelete(cv.id);
       if (!deleted) {
-        alert("CV not found or already deleted.");
+        setShowConfirm(false);
+        throw new Error("CV not found or already deleted.");
       }
+      setShowConfirm(false);
     } catch (err) {
       console.error(err);
-      alert("Failed to delete CV. Please try again.");
+      setShowConfirm(false);
     } finally {
       setIsDeleting(false);
     }
@@ -317,7 +320,7 @@ const CvCard = ({ cv, onDelete }: { cv: CvSummary; onDelete: (id: string) => Pro
           </button>
           <button
             type="button"
-            onClick={handleDelete}
+            onClick={() => setShowConfirm(true)}
             disabled={isDeleting || status === "running"}
             className="inline-flex items-center justify-center rounded-full bg-red-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-red-500 disabled:cursor-not-allowed disabled:bg-red-300"
           >
@@ -342,6 +345,38 @@ const CvCard = ({ cv, onDelete }: { cv: CvSummary; onDelete: (id: string) => Pro
         <p className="mt-4 rounded-2xl bg-red-50 px-4 py-3 text-xs text-red-600 dark:bg-red-500/10 dark:text-red-200">
           {error}
         </p>
+      ) : null}
+      {showConfirm ? (
+        <div
+          role="alertdialog"
+          aria-modal="false"
+          aria-labelledby={confirmButtonId}
+          aria-describedby={cancelButtonId}
+          className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs text-slate-700 dark:border-slate-600 dark:bg-slate-800/70 dark:text-slate-200"
+        >
+          <p className="font-semibold">Delete {cv.fileName}?</p>
+          <p id={cancelButtonId} className="mt-1 text-[11px]">
+            This removes the CV metadata permanently.
+          </p>
+          <div className="mt-3 flex gap-2">
+            <button
+              id={confirmButtonId}
+              type="button"
+              onClick={() => void handleDelete()}
+              disabled={isDeleting}
+              className="inline-flex items-center justify-center rounded-full bg-red-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-red-500 disabled:cursor-not-allowed disabled:bg-red-300"
+            >
+              {isDeleting ? "Deleting…" : "Confirm delete"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowConfirm(false)}
+              className="inline-flex items-center justify-center rounded-full border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-600 transition hover:border-slate-400 hover:text-slate-800 dark:border-slate-600 dark:text-slate-200"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
       ) : null}
       {analyses.length > 0 ? (
         <div className="mt-4 space-y-3">
@@ -518,6 +553,13 @@ export default function DashboardPage() {
           fileInputRef.current.value = "";
         }
         setSelectedFileInfo(null);
+        void Swal.fire({
+          title: "Upload successful",
+          text: `${payload.cv.fileName} is ready for analysis.`,
+          icon: "success",
+          timer: 1600,
+          showConfirmButton: false,
+        });
       } catch (err) {
         const message = err instanceof Error ? err.message : "Unexpected upload failure.";
         setClientError(message);

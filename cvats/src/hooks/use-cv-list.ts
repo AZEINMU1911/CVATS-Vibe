@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Swal from "sweetalert2";
 
 export interface CvListItem {
   id: string;
@@ -105,6 +106,14 @@ export const useCvList = () => {
       });
       if (response.status === 204) {
         setItems((current) => current.filter((item) => item.id !== id));
+        void Swal.fire({
+          title: "CV deleted",
+          text: "The resume metadata has been removed.",
+          icon: "success",
+          confirmButtonText: "OK",
+          timer: 1500,
+          showConfirmButton: false,
+        });
         return true;
       }
       if (response.status === 404) {
