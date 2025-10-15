@@ -20,7 +20,7 @@ test("dashboard upload persists Cloudinary metadata", async ({ page }) => {
       status: 200,
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        secure_url: "https://res.cloudinary.com/demo/sample.pdf",
+        secure_url: "http://127.0.0.1:3000/fixtures/sample.pdf",
         public_id: "cvats/sample",
         bytes: 8_192,
       }),
@@ -34,4 +34,7 @@ test("dashboard upload persists Cloudinary metadata", async ({ page }) => {
 
   await expect(page.getByRole("link", { name: "sample.pdf" }).first()).toBeVisible();
   await expect(page.getByText("Cloudinary ID: cvats/sample").first()).toBeVisible();
+  await page.getByRole("button", { name: "Analyze" }).first().click();
+  await expect(page.getByText(/Score:/i)).toBeVisible();
+  await expect(page.getByText("javascript", { exact: false })).toBeVisible();
 });

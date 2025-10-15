@@ -4,6 +4,7 @@ import { PrismaClient } from "@prisma/client";
 
 export interface CvRecord {
   id: string;
+  userId?: string;
   fileName: string;
   fileUrl: string;
   fileSize: number;
@@ -23,6 +24,7 @@ export interface CreateCvInput {
 export interface CvRepository {
   listForUser(userId: string): Promise<CvRecord[]>;
   createForUser(userId: string, input: CreateCvInput): Promise<CvRecord>;
+  findById(id: string): Promise<CvRecord | null>;
   reset?: () => void;
 }
 
@@ -33,6 +35,7 @@ const shouldUseMemory =
 
 const mapCv = (record: CV): CvRecord => ({
   id: record.id,
+  userId: record.userId,
   fileName: record.fileName,
   fileUrl: record.fileUrl,
   fileSize: record.fileSize,
@@ -69,6 +72,10 @@ const createPrismaRepository = (): CvRepository => {
       });
       return mapCv(created);
     },
+    async findById(id) {
+      const record = await prisma.cV.findUnique({ where: { id } });
+      return record ? mapCv(record) : null;
+    },
   };
 };
 
@@ -83,6 +90,7 @@ const createMemoryRepository = (): CvRepository => {
     async createForUser(userId, input) {
       const record: CvRecord = {
         id: randomUUID(),
+        userId,
         fileName: input.fileName,
         fileUrl: input.fileUrl,
         fileSize: input.fileSize,
@@ -93,6 +101,15 @@ const createMemoryRepository = (): CvRepository => {
       const nextItems = itemsByUser.get(userId) ?? [];
       itemsByUser.set(userId, [record, ...nextItems]);
       return record;
+    },
+    async findById(id) {
+      for (const list of itemsByUser.values()) {
+        const match = list.find((item) => item.id === id);
+        if (match) {
+          return match;
+        }
+      }
+      return null;
     },
     reset() {
       itemsByUser.clear();

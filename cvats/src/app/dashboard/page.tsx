@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useUploadToCloudinary, type UploadStatus } from "@/hooks/use-upload-to-cloudinary";
 import { validateFile } from "@/lib/validate-file";
+import { useAnalyze } from "@/hooks/use-analyze";
 
 interface CvSummary {
   id: string;
@@ -257,34 +258,91 @@ const CvEmptyState = () => (
   </div>
 );
 
-const CvCard = ({ cv }: { cv: CvSummary }) => (
-  <li className="group transform rounded-2xl border border-slate-200 bg-white px-5 py-4 text-sm transition hover:-translate-y-1 hover:border-blue-200 hover:shadow-lg dark:border-slate-700 dark:bg-slate-900/60">
-    <div className="flex flex-wrap items-center justify-between gap-2">
-      <a
-        href={cv.fileUrl}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="text-base font-semibold text-blue-700 transition group-hover:text-blue-600 dark:text-blue-300 dark:group-hover:text-blue-200"
-      >
-        {cv.fileName}
-      </a>
-      <span className="text-xs text-slate-500 dark:text-slate-300">{formatTimestamp(cv.uploadedAt)}</span>
-    </div>
-    <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-slate-500 dark:text-slate-300">
-      <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1 font-medium text-slate-600 dark:bg-slate-800/80 dark:text-slate-200">
-        {cv.mimeType}
-      </span>
-      <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1 font-medium text-slate-600 dark:bg-slate-800/80 dark:text-slate-200">
-        {formatBytes(cv.fileSize)}
-      </span>
-      {cv.publicId ? (
+const CvCard = ({ cv }: { cv: CvSummary }) => {
+  const { analyses, status, error, analyze } = useAnalyze(cv.id);
+
+  return (
+    <li className="group transform rounded-2xl border border-slate-200 bg-white px-5 py-4 text-sm transition hover:-translate-y-1 hover:border-blue-200 hover:shadow-lg dark:border-slate-700 dark:bg-slate-900/60">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-col">
+          <a
+            href={cv.fileUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-base font-semibold text-blue-700 transition group-hover:text-blue-600 dark:text-blue-300 dark:group-hover:text-blue-200"
+          >
+            {cv.fileName}
+          </a>
+          <span className="text-xs text-slate-500 dark:text-slate-300">
+            {formatTimestamp(cv.uploadedAt)}
+          </span>
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            void analyze();
+          }}
+          disabled={status === "running"}
+          className="inline-flex items-center justify-center rounded-full bg-blue-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-blue-300 dark:bg-blue-500 dark:hover:bg-blue-400"
+        >
+          {status === "running" ? "Analyzing…" : "Analyze"}
+        </button>
+      </div>
+      <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-slate-500 dark:text-slate-300">
         <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1 font-medium text-slate-600 dark:bg-slate-800/80 dark:text-slate-200">
-          Cloudinary ID: {cv.publicId}
+          {cv.mimeType}
         </span>
+        <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1 font-medium text-slate-600 dark:bg-slate-800/80 dark:text-slate-200">
+          {formatBytes(cv.fileSize)}
+        </span>
+        {cv.publicId ? (
+          <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1 font-medium text-slate-600 dark:bg-slate-800/80 dark:text-slate-200">
+            Cloudinary ID: {cv.publicId}
+          </span>
+        ) : null}
+      </div>
+      {error ? (
+        <p className="mt-4 rounded-2xl bg-red-50 px-4 py-3 text-xs text-red-600 dark:bg-red-500/10 dark:text-red-200">
+          {error}
+        </p>
       ) : null}
-    </div>
-  </li>
-);
+      {analyses.length > 0 ? (
+        <div className="mt-4 space-y-3">
+          {analyses.map((analysis) => (
+            <div
+              key={analysis.id}
+              className="rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3 text-xs text-blue-900 dark:border-blue-400/40 dark:bg-blue-500/10 dark:text-blue-200"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="font-semibold">Score: {analysis.score ?? 0}</span>
+                <span>{new Date(analysis.createdAt).toLocaleTimeString()}</span>
+              </div>
+              {analysis.message ? (
+                <p className="mt-1 text-[11px] text-blue-700 dark:text-blue-200/80">{analysis.message}</p>
+              ) : null}
+              <div className="mt-2 flex flex-wrap gap-2">
+                {analysis.keywordsMatched.length > 0 ? (
+                  analysis.keywordsMatched.map((keyword) => (
+                    <span
+                      key={keyword}
+                      className="rounded-full bg-white/70 px-2 py-0.5 text-[11px] font-medium text-blue-700 dark:bg-blue-400/20 dark:text-blue-100"
+                    >
+                      {keyword}
+                    </span>
+                  ))
+                ) : (
+                  <span className="text-[11px] text-blue-700 dark:text-blue-200/80">
+                    No keywords matched.
+                  </span>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </li>
+  );
+};
 
 const CvList = ({ cvs, fetchState }: CvListProps) => (
   <CvListShell>

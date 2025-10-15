@@ -39,3 +39,9 @@ NEXT_PUBLIC_ALLOWED_MIME=application/pdf,application/vnd.openxmlformats-officedo
 ### Testing Notes
 
 Vitest covers utility and API logic (including upload validation and persistence). Playwright validates marketing navigation and the Cloudinary → metadata flow using a stubbed upload response. CI executes linting, type checking, unit tests, and e2e tests on every push.
+
+### CV Analysis MVP
+
+- `/api/analyses` extracts text from the stored file (PDF via `pdf-parse`, DOCX currently returns an empty string until a lightweight extractor is added) and scores keyword coverage.
+- Scoring is deterministic: `scoreKeywords` lowercases both the text and keywords, ignores duplicates, and returns a 0–100 score with the matched keywords.
+- The dashboard renders an **Analyze** button per CV. Results surface inline with matched keywords and any extraction warnings.
