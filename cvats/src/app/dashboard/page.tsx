@@ -1,6 +1,6 @@
 "use client";
 
-import type { FormEvent, RefObject } from "react";
+import type { FormEvent, ReactNode, RefObject } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useUploadToCloudinary, type UploadStatus } from "@/hooks/use-upload-to-cloudinary";
@@ -69,6 +69,89 @@ const statusLabel = (status: UploadStatus, fallback: string | null, error: strin
   return fallback;
 };
 
+const UploadFormSection = ({ children }: { children: ReactNode }) => (
+  <section className="rounded-3xl border border-slate-200 bg-white/95 p-6 shadow-xl shadow-slate-200/40 backdrop-blur-sm transition dark:border-slate-800 dark:bg-slate-900/80 dark:shadow-none">
+    {children}
+  </section>
+);
+
+const UploadFormHeader = () => (
+  <div className="flex flex-col gap-2">
+    <p className="text-xs font-semibold uppercase tracking-[0.3em] text-slate-500 dark:text-slate-300">
+      Upload
+    </p>
+    <h2 className="text-xl font-semibold text-slate-900 dark:text-slate-100">
+      Upload a PDF or DOCX resume
+    </h2>
+    <p className="text-sm text-slate-500 dark:text-slate-300">
+      Drag and drop a file or choose one from your device. We&apos;ll send it straight to Cloudinary
+      and store only the metadata.
+    </p>
+  </div>
+);
+
+const UploadDropzone = ({
+  inputRef,
+  onFileChange,
+  maxFileLabel,
+}: Pick<UploadFormProps, "inputRef" | "onFileChange" | "maxFileLabel">) => (
+  <label
+    htmlFor="cv-upload"
+    className="relative flex cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-slate-300 bg-slate-50 px-6 py-8 text-center text-sm text-slate-500 transition hover:border-slate-400 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800/60 dark:text-slate-300 dark:hover:border-slate-500 dark:hover:bg-slate-800"
+  >
+    <span className="text-base font-medium text-slate-700 dark:text-slate-100">
+      Drop your resume here
+    </span>
+    <span className="rounded-full border border-slate-300 px-3 py-1 text-xs font-medium text-slate-600 transition hover:border-slate-400 dark:border-slate-600 dark:text-slate-300">
+      or click to browse
+    </span>
+    <span className="text-xs text-slate-400 dark:text-slate-400">
+      Max size: {maxFileLabel} MB • Approved types: PDF, DOCX
+    </span>
+    <input
+      ref={inputRef}
+      id="cv-upload"
+      name="cv-upload"
+      type="file"
+      accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      onChange={onFileChange}
+      className="absolute inset-0 cursor-pointer opacity-0"
+    />
+  </label>
+);
+
+const UploadControls = ({ status, children }: Pick<UploadFormProps, "status"> & { children: ReactNode }) => (
+  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+    <p className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-300">
+      <span className="inline-flex h-2 w-2 rounded-full bg-slate-400" aria-hidden />
+      {children}
+    </p>
+    <button
+      type="submit"
+      className="inline-flex min-w-[140px] items-center justify-center rounded-full bg-blue-600 px-5 py-2 text-sm font-semibold text-white transition hover:bg-blue-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:bg-blue-300 dark:bg-blue-500 dark:hover:bg-blue-400"
+      disabled={status === "uploading"}
+    >
+      {status === "uploading" ? "Uploading…" : "Save to CVs"}
+    </button>
+  </div>
+);
+
+const UploadStatusBanner = ({ statusMessage, hasError }: Pick<UploadFormProps, "statusMessage" | "hasError">) => {
+  if (!statusMessage) {
+    return null;
+  }
+
+  const tone = hasError
+    ? "bg-red-50 text-red-700 dark:bg-red-500/10 dark:text-red-200"
+    : "bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-200";
+
+  return (
+    <p role="status" aria-live="polite" className={`rounded-2xl px-4 py-3 text-sm font-medium ${tone}`}>
+      {statusMessage}
+    </p>
+  );
+};
+
 const UploadForm = ({
   status,
   statusMessage,
@@ -78,101 +161,110 @@ const UploadForm = ({
   inputRef,
   maxFileLabel,
 }: UploadFormProps) => (
-  <section className="rounded-2xl border border-[#e2e8f0] bg-white p-6 shadow-sm">
-    <form className="flex flex-col gap-4" onSubmit={onSubmit}>
-      <label htmlFor="cv-upload" className="text-sm font-medium text-[#0f172a]">
-        Upload a PDF or DOCX resume
-      </label>
-      <input
-        ref={inputRef}
-        id="cv-upload"
-        name="cv-upload"
-        type="file"
-        accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        onChange={onFileChange}
-        className="rounded-md border border-[#cbd5f5] px-3 py-2 text-sm"
-      />
-      <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <p className="text-xs text-[#64748b]">
-          Max size: {maxFileLabel} MB • Approved types: PDF, DOCX
-        </p>
-        <button
-          type="submit"
-          className="inline-flex items-center justify-center rounded-md bg-[#2563eb] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#1d4ed8] disabled:cursor-not-allowed disabled:bg-[#93c5fd]"
-          disabled={status === "uploading"}
-        >
-          {status === "uploading" ? "Uploading…" : "Upload file"}
-        </button>
-      </div>
-      {statusMessage && (
-        <div
-          className={`rounded-md px-3 py-2 text-sm ${
-            hasError ? "bg-[#fee2e2] text-[#b91c1c]" : "bg-[#dcfce7] text-[#166534]"
-          }`}
-        >
-          {statusMessage}
-        </div>
-      )}
+  <UploadFormSection>
+    <form className="flex flex-col gap-5" onSubmit={onSubmit}>
+      <UploadFormHeader />
+      <UploadDropzone inputRef={inputRef} onFileChange={onFileChange} maxFileLabel={maxFileLabel} />
+      <UploadControls status={status}>
+        {status === "uploading" ? "Uploading to Cloudinary…" : "Ready when you are — PDFs and DOCX files only."}
+      </UploadControls>
+      <UploadStatusBanner statusMessage={statusMessage} hasError={hasError} />
     </form>
+  </UploadFormSection>
+);
+
+const CvListShell = ({ children }: { children: ReactNode }) => (
+  <section className="rounded-3xl border border-slate-200 bg-white/95 p-6 shadow-xl shadow-slate-200/40 backdrop-blur-sm transition dark:border-slate-800 dark:bg-slate-900/80 dark:text-slate-100">
+    {children}
   </section>
 );
 
-const CvList = ({ cvs, fetchState }: CvListProps) => (
-  <section className="rounded-2xl border border-[#e2e8f0] bg-white p-6 shadow-sm">
-    <header className="flex items-center justify-between">
-      <h2 className="text-lg font-semibold text-[#0f172a]">My CVs</h2>
-      <Link
-        href="/"
-        className="text-sm font-medium text-[#2563eb] hover:text-[#1d4ed8] hover:underline"
+const CvListHeader = () => (
+  <header className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+    <div>
+      <p className="text-xs font-semibold uppercase tracking-[0.3em] text-slate-500 dark:text-slate-300">
+        Library
+      </p>
+      <h2 className="text-xl font-semibold text-slate-900 dark:text-slate-100">My CVs</h2>
+    </div>
+    <Link
+      href="/"
+      className="text-sm font-medium text-blue-600 transition hover:text-blue-500 dark:text-blue-400"
+    >
+      Back to marketing site
+    </Link>
+  </header>
+);
+
+const CvListMessage = ({ tone, children }: { tone: "loading" | "error"; children: ReactNode }) => {
+  const style =
+    tone === "loading"
+      ? "border border-dashed border-slate-200 bg-slate-50 text-slate-500 dark:border-slate-700 dark:bg-slate-800/40 dark:text-slate-300"
+      : "border border-red-200 bg-red-50 text-red-700 dark:border-red-500/40 dark:bg-red-500/10 dark:text-red-200";
+
+  return (
+    <p className={`mt-8 rounded-2xl px-4 py-6 text-center text-sm ${style}`}>
+      {children}
+    </p>
+  );
+};
+
+const CvEmptyState = () => (
+  <div className="mt-8 flex flex-col items-center gap-3 rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-6 py-10 text-center text-sm text-slate-500 dark:border-slate-700 dark:bg-slate-800/40 dark:text-slate-300">
+    <span className="rounded-full bg-slate-200 px-3 py-1 text-xs font-semibold text-slate-600 dark:bg-slate-700 dark:text-slate-200">
+      No uploads yet
+    </span>
+    <p>Add your first resume above to see metadata, file size, and Cloudinary IDs in this list.</p>
+  </div>
+);
+
+const CvCard = ({ cv }: { cv: CvSummary }) => (
+  <li className="group transform rounded-2xl border border-slate-200 bg-white px-5 py-4 text-sm transition hover:-translate-y-1 hover:border-blue-200 hover:shadow-lg dark:border-slate-700 dark:bg-slate-900/60">
+    <div className="flex flex-wrap items-center justify-between gap-2">
+      <a
+        href={cv.fileUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-base font-semibold text-blue-700 transition group-hover:text-blue-600 dark:text-blue-300 dark:group-hover:text-blue-200"
       >
-        Back to marketing site
-      </Link>
-    </header>
+        {cv.fileName}
+      </a>
+      <span className="text-xs text-slate-500 dark:text-slate-300">{formatTimestamp(cv.uploadedAt)}</span>
+    </div>
+    <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-slate-500 dark:text-slate-300">
+      <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1 font-medium text-slate-600 dark:bg-slate-800/80 dark:text-slate-200">
+        {cv.mimeType}
+      </span>
+      <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1 font-medium text-slate-600 dark:bg-slate-800/80 dark:text-slate-200">
+        {formatBytes(cv.fileSize)}
+      </span>
+      {cv.publicId ? (
+        <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1 font-medium text-slate-600 dark:bg-slate-800/80 dark:text-slate-200">
+          Cloudinary ID: {cv.publicId}
+        </span>
+      ) : null}
+    </div>
+  </li>
+);
 
+const CvList = ({ cvs, fetchState }: CvListProps) => (
+  <CvListShell>
+    <CvListHeader />
     {fetchState === "loading" && (
-      <p className="mt-6 text-sm text-[#475569]">Loading existing uploads…</p>
+      <CvListMessage tone="loading">Loading existing uploads…</CvListMessage>
     )}
-
     {fetchState === "error" && (
-      <p className="mt-6 text-sm text-[#b91c1c]">
-        We could not load your CVs. Please refresh to try again.
-      </p>
+      <CvListMessage tone="error">We could not load your CVs. Please refresh to try again.</CvListMessage>
     )}
-
-    {fetchState === "idle" && cvs.length === 0 && (
-      <p className="mt-6 text-sm text-[#475569]">
-        No uploads yet. Choose a PDF or DOCX resume to get started.
-      </p>
-    )}
-
+    {fetchState === "idle" && cvs.length === 0 && <CvEmptyState />}
     {cvs.length > 0 && (
-      <ul className="mt-6 space-y-4">
+      <ul className="mt-8 space-y-4">
         {cvs.map((cv) => (
-          <li
-            key={cv.id}
-            className="flex flex-col gap-2 rounded-xl border border-[#e2e8f0] px-4 py-3 text-sm transition hover:border-[#cbd5f5]"
-          >
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <a
-                href={cv.fileUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="font-semibold text-[#1e3a8a] hover:underline"
-              >
-                {cv.fileName}
-              </a>
-              <span className="text-xs text-[#64748b]">{formatTimestamp(cv.uploadedAt)}</span>
-            </div>
-            <div className="flex flex-wrap items-center gap-4 text-xs text-[#475569]">
-              <span>{cv.mimeType}</span>
-              <span>{formatBytes(cv.fileSize)}</span>
-              {cv.publicId ? <span>Cloudinary ID: {cv.publicId}</span> : null}
-            </div>
-          </li>
+          <CvCard key={cv.id} cv={cv} />
         ))}
       </ul>
     )}
-  </section>
+  </CvListShell>
 );
 
 export default function DashboardPage() {
@@ -182,6 +274,14 @@ export default function DashboardPage() {
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { status, error: uploadError, upload, reset } = useUploadToCloudinary();
+  const stats = useMemo(() => {
+    const totalBytes = cvs.reduce((acc, cv) => acc + cv.fileSize, 0);
+    return {
+      count: cvs.length,
+      totalBytes,
+      totalLabel: formatBytes(totalBytes),
+    };
+  }, [cvs]);
 
   const loadCvs = useCallback(async () => {
     setFetchState("loading");
@@ -280,29 +380,46 @@ export default function DashboardPage() {
   const maxFileLabel = process.env.NEXT_PUBLIC_MAX_FILE_MB ?? "8";
 
   return (
-    <main className="mx-auto flex min-h-[80vh] w-full max-w-4xl flex-col gap-10 px-6 py-16">
-      <header className="space-y-3">
-        <p className="text-xs font-semibold uppercase tracking-[0.35em] text-[#94a3b8]">
-          Dashboard
-        </p>
-        <h1 className="text-3xl font-semibold text-[#0f172a]">My CVs</h1>
-        <p className="text-sm text-[#475569]">
-          Upload resumes directly to Cloudinary using the unsigned preset. CVATS stores only the
-          resulting URL and metadata for downstream analysis.
-        </p>
-      </header>
+    <div className="relative min-h-[80vh] w-full bg-gradient-to-b from-slate-950 via-slate-900 to-slate-950 px-4 py-16 text-slate-900 dark:text-slate-100">
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(59,130,246,0.15),_transparent_55%)]" aria-hidden />
+      <main className="relative mx-auto flex w-full max-w-5xl flex-col gap-10 px-2 sm:px-8">
+        <header className="space-y-3">
+          <p className="text-xs font-semibold uppercase tracking-[0.35em] text-slate-300">
+            Dashboard
+          </p>
+          <div className="flex flex-col gap-4 rounded-3xl border border-white/10 bg-white/10 p-6 text-white shadow-lg backdrop-blur dark:border-white/5">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h1 className="text-3xl font-semibold text-white">My CVs</h1>
+                <p className="text-sm text-slate-200">
+                  Upload resumes directly to Cloudinary using the unsigned preset. CVATS stores only
+                  the resulting URL and metadata for downstream analysis.
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-3 text-xs font-medium">
+                <span className="rounded-full bg-white/20 px-4 py-2 text-white">
+                  {stats.count} {stats.count === 1 ? "CV stored" : "CVs stored"}
+                </span>
+                <span className="rounded-full bg-white/10 px-4 py-2 text-white/90">
+                  Total size {stats.totalLabel}
+                </span>
+              </div>
+            </div>
+          </div>
+        </header>
 
-      <UploadForm
-        status={status}
-        statusMessage={statusMessage}
-        hasError={Boolean(clientError ?? uploadError)}
-        onSubmit={handleSubmit}
-        onFileChange={handleFileChange}
-        inputRef={fileInputRef}
-        maxFileLabel={maxFileLabel}
-      />
+        <UploadForm
+          status={status}
+          statusMessage={statusMessage}
+          hasError={Boolean(clientError ?? uploadError)}
+          onSubmit={handleSubmit}
+          onFileChange={handleFileChange}
+          inputRef={fileInputRef}
+          maxFileLabel={maxFileLabel}
+        />
 
-      <CvList cvs={cvs} fetchState={fetchState} />
-    </main>
+        <CvList cvs={cvs} fetchState={fetchState} />
+      </main>
+    </div>
   );
 }
