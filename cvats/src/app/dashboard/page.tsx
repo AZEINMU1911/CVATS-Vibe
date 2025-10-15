@@ -25,6 +25,8 @@ interface UploadFormProps {
   onFileChange: () => void;
   inputRef: RefObject<HTMLInputElement | null>;
   maxFileLabel: string;
+  selectedFileName: string | null;
+  selectedFileSize: number | null;
 }
 
 interface CvListProps {
@@ -94,19 +96,23 @@ const UploadDropzone = ({
   inputRef,
   onFileChange,
   maxFileLabel,
-}: Pick<UploadFormProps, "inputRef" | "onFileChange" | "maxFileLabel">) => (
+  selectedFileName,
+  selectedFileSize,
+}: Pick<UploadFormProps, "inputRef" | "onFileChange" | "maxFileLabel" | "selectedFileName" | "selectedFileSize">) => (
   <label
     htmlFor="cv-upload"
     className="relative flex cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-slate-300 bg-slate-50 px-6 py-8 text-center text-sm text-slate-500 transition hover:border-slate-400 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800/60 dark:text-slate-300 dark:hover:border-slate-500 dark:hover:bg-slate-800"
   >
     <span className="text-base font-medium text-slate-700 dark:text-slate-100">
-      Drop your resume here
+      {selectedFileName ? "Ready to upload" : "Drop your resume here"}
     </span>
     <span className="rounded-full border border-slate-300 px-3 py-1 text-xs font-medium text-slate-600 transition hover:border-slate-400 dark:border-slate-600 dark:text-slate-300">
-      or click to browse
+      {selectedFileName ? "Change file" : "or click to browse"}
     </span>
     <span className="text-xs text-slate-400 dark:text-slate-400">
-      Max size: {maxFileLabel} MB • Approved types: PDF, DOCX
+      {selectedFileName
+        ? `${selectedFileName}${selectedFileSize ? ` • ${formatBytes(selectedFileSize)}` : ""}`
+        : `Max size: ${maxFileLabel} MB • Approved types: PDF, DOCX`}
     </span>
     <input
       ref={inputRef}
@@ -120,19 +126,35 @@ const UploadDropzone = ({
   </label>
 );
 
-const UploadControls = ({ status, children }: Pick<UploadFormProps, "status"> & { children: ReactNode }) => (
+const UploadControls = ({
+  status,
+  selectedFileName,
+  selectedFileSize,
+  maxFileLabel,
+  children,
+}: Pick<UploadFormProps, "status" | "maxFileLabel" | "selectedFileName" | "selectedFileSize"> & { children: ReactNode }) => (
   <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
     <p className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-300">
       <span className="inline-flex h-2 w-2 rounded-full bg-slate-400" aria-hidden />
       {children}
     </p>
-    <button
-      type="submit"
-      className="inline-flex min-w-[140px] items-center justify-center rounded-full bg-blue-600 px-5 py-2 text-sm font-semibold text-white transition hover:bg-blue-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:bg-blue-300 dark:bg-blue-500 dark:hover:bg-blue-400"
-      disabled={status === "uploading"}
-    >
-      {status === "uploading" ? "Uploading…" : "Save to CVs"}
-    </button>
+    <div className="flex flex-col items-start gap-2 sm:items-end">
+      {selectedFileName ? (
+        <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600 dark:bg-slate-800/80 dark:text-slate-200">
+          Selected: {selectedFileName}
+          {selectedFileSize ? ` • ${formatBytes(selectedFileSize)}` : ""}
+        </span>
+      ) : (
+        <span className="text-xs text-slate-400 dark:text-slate-400">Max size: {maxFileLabel} MB</span>
+      )}
+      <button
+        type="submit"
+        className="inline-flex min-w-[140px] items-center justify-center rounded-full bg-blue-600 px-5 py-2 text-sm font-semibold text-white transition hover:bg-blue-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:bg-blue-300 dark:bg-blue-500 dark:hover:bg-blue-400"
+        disabled={status === "uploading" || !selectedFileName}
+      >
+        {status === "uploading" ? "Uploading…" : "Save to CVs"}
+      </button>
+    </div>
   </div>
 );
 
@@ -160,13 +182,30 @@ const UploadForm = ({
   onFileChange,
   inputRef,
   maxFileLabel,
+  selectedFileName,
+  selectedFileSize,
 }: UploadFormProps) => (
   <UploadFormSection>
     <form className="flex flex-col gap-5" onSubmit={onSubmit}>
       <UploadFormHeader />
-      <UploadDropzone inputRef={inputRef} onFileChange={onFileChange} maxFileLabel={maxFileLabel} />
-      <UploadControls status={status}>
-        {status === "uploading" ? "Uploading to Cloudinary…" : "Ready when you are — PDFs and DOCX files only."}
+      <UploadDropzone
+        inputRef={inputRef}
+        onFileChange={onFileChange}
+        maxFileLabel={maxFileLabel}
+        selectedFileName={selectedFileName}
+        selectedFileSize={selectedFileSize ?? null}
+      />
+      <UploadControls
+        status={status}
+        selectedFileName={selectedFileName}
+        selectedFileSize={selectedFileSize ?? null}
+        maxFileLabel={maxFileLabel}
+      >
+        {status === "uploading"
+          ? "Uploading to Cloudinary…"
+          : selectedFileName
+            ? "All set — click save to persist metadata."
+            : "Ready when you are — PDFs and DOCX files only."}
       </UploadControls>
       <UploadStatusBanner statusMessage={statusMessage} hasError={hasError} />
     </form>
@@ -272,6 +311,9 @@ export default function DashboardPage() {
   const [fetchState, setFetchState] = useState<FetchState>("loading");
   const [clientError, setClientError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [selectedFileInfo, setSelectedFileInfo] = useState<{ name: string; size: number } | null>(
+    null,
+  );
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { status, error: uploadError, upload, reset } = useUploadToCloudinary();
   const stats = useMemo(() => {
@@ -308,6 +350,12 @@ export default function DashboardPage() {
     setClientError(null);
     setSuccessMessage(null);
     reset();
+    const file = fileInputRef.current?.files?.[0] ?? null;
+    if (file) {
+      setSelectedFileInfo({ name: file.name, size: file.size });
+    } else {
+      setSelectedFileInfo(null);
+    }
   }, [reset]);
 
   const handleSubmit = useCallback(
@@ -319,6 +367,7 @@ export default function DashboardPage() {
       const file = fileInputRef.current?.files?.[0];
       if (!file) {
         setClientError("Please choose a PDF or DOCX file before uploading.");
+        setSelectedFileInfo(null);
         return;
       }
 
@@ -334,6 +383,10 @@ export default function DashboardPage() {
             ? "Only PDF or DOCX files are allowed."
             : "File is larger than the permitted limit.";
         setClientError(message);
+        setSelectedFileInfo(null);
+        if (fileInputRef.current) {
+          fileInputRef.current.value = "";
+        }
         return;
       }
 
@@ -364,6 +417,7 @@ export default function DashboardPage() {
         if (fileInputRef.current) {
           fileInputRef.current.value = "";
         }
+        setSelectedFileInfo(null);
       } catch (err) {
         const message = err instanceof Error ? err.message : "Unexpected upload failure.";
         setClientError(message);
@@ -378,6 +432,8 @@ export default function DashboardPage() {
   );
 
   const maxFileLabel = process.env.NEXT_PUBLIC_MAX_FILE_MB ?? "8";
+  const selectedFileName = selectedFileInfo?.name ?? null;
+  const selectedFileSize = selectedFileInfo?.size ?? null;
 
   return (
     <div className="relative min-h-[80vh] w-full bg-gradient-to-b from-slate-950 via-slate-900 to-slate-950 px-4 py-16 text-slate-900 dark:text-slate-100">
@@ -416,6 +472,8 @@ export default function DashboardPage() {
           onFileChange={handleFileChange}
           inputRef={fileInputRef}
           maxFileLabel={maxFileLabel}
+          selectedFileName={selectedFileName}
+          selectedFileSize={selectedFileSize}
         />
 
         <CvList cvs={cvs} fetchState={fetchState} />
