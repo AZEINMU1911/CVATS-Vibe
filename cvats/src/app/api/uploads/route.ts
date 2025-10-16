@@ -10,6 +10,8 @@ const payloadSchema = z.object({
   mime: z.string().min(1).max(256),
   size: z.number().int().positive(),
   publicId: z.string().min(1).max(256).optional(),
+  resourceType: z.string().min(1),
+  accessMode: z.string().min(1),
 });
 
 const validationMessages: Record<"invalid-type" | "file-too-large", string> = {
@@ -37,12 +39,26 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Invalid payload", details: parseResult.error.format() }, { status: 400 });
   }
 
-  const { originalName, mime, size, fileUrl, publicId } = parseResult.data;
+  const { originalName, mime, size, fileUrl, publicId, resourceType, accessMode } = parseResult.data;
   const validation = validateFile({ size, type: mime, name: originalName });
 
   if (!validation.ok) {
     const message = validationMessages[validation.error];
     return NextResponse.json({ error: message }, { status: 400 });
+  }
+
+  const normalizedResource = resourceType.toLowerCase();
+  const normalizedAccess = accessMode.toLowerCase();
+  if (normalizedResource !== "raw" || normalizedAccess !== "public") {
+    console.error("UPLOAD_INVALID_RESOURCE", {
+      resourceType: normalizedResource,
+      accessMode: normalizedAccess,
+      fileUrl,
+    });
+    return NextResponse.json(
+      { error: "Cloudinary upload is not publicly accessible. Please retry later." },
+      { status: 502 },
+    );
   }
 
   try {

@@ -7,6 +7,8 @@ export interface CloudinaryUploadResult {
   bytes: number;
   publicId?: string;
   format?: string;
+  resourceType: string;
+  accessMode: string;
 }
 
 export const useUploadToCloudinary = () => {
@@ -36,6 +38,7 @@ export const useUploadToCloudinary = () => {
       const formData = new FormData();
       formData.append("file", file);
       formData.append("upload_preset", uploadPreset);
+      formData.append("resource_type", "raw");
 
       const response = await fetch(
         `https://api.cloudinary.com/v1_1/${cloudName}/auto/upload`,
@@ -56,6 +59,10 @@ export const useUploadToCloudinary = () => {
       const secureUrl = typeof payload.secure_url === "string" ? payload.secure_url : null;
       const publicId = typeof payload.public_id === "string" ? payload.public_id : undefined;
       const bytes = typeof payload.bytes === "number" ? payload.bytes : file.size;
+      const resourceType =
+        typeof payload.resource_type === "string" ? payload.resource_type.toLowerCase() : "";
+      const accessMode =
+        typeof payload.access_mode === "string" ? payload.access_mode.toLowerCase() : "";
 
       if (!secureUrl) {
         setStatus("error");
@@ -64,10 +71,20 @@ export const useUploadToCloudinary = () => {
         throw new Error(message);
       }
 
+      if (resourceType !== "raw" || accessMode !== "public") {
+        setStatus("error");
+        const message = "Cloudinary upload is not publicly accessible. Check preset configuration.";
+        setError(message);
+        console.error("cloudinary_upload_misconfigured", { resourceType, accessMode });
+        throw new Error(message);
+      }
+
       setStatus("success");
       const result: CloudinaryUploadResult = {
         fileUrl: secureUrl,
         bytes,
+        resourceType,
+        accessMode,
       };
 
       if (publicId) {

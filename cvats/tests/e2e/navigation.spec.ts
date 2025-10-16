@@ -16,6 +16,8 @@ const setupAppRoutes = async (page: Page) => {
         secure_url: "http://127.0.0.1:3000/fixtures/sample.pdf",
         public_id: "cvats/sample",
         bytes: 8_192,
+        resource_type: "raw",
+        access_mode: "public",
       }),
     });
   });
