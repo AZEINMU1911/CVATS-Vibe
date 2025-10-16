@@ -8,6 +8,19 @@ describe("auth flow", () => {
     resetUserRepository();
   });
 
+  it("rejects passwords that fail policy", async () => {
+    const response = await register(
+      new Request("http://localhost/api/auth/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: "bad@example.com", password: "short" }),
+      }),
+    );
+    expect(response.status).toBe(400);
+    const payload = (await response.json()) as { error?: string };
+    expect(payload.error).toBe("Password must be at least 8 characters.");
+  });
+
   it("registers a user and prevents duplicates", async () => {
     const first = await register(
       new Request("http://localhost/api/auth/register", {

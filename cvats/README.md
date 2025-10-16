@@ -63,6 +63,7 @@ Vitest covers utility and API logic (including upload validation and persistence
 - Each entry exposes **Analyze** and **Delete** actions; delete prompts for confirmation and updates the list immediately.
 - Empty, loading, and error states use accessible status/alert messaging so assistive tech announces changes.
 - Authentication uses Auth.js credentials with bcrypt-hashed passwords. Register at `/register`, sign in at `/login`, and sign out from the dashboard header. Sessions are JWT-based and scoped to the active user.
+- Middleware at `middleware.ts` runs on `/dashboard` to redirect unauthenticated visitors to `/login?callbackUrl=/dashboard`, while the `/login` and `/register` pages issue server-side redirects back to `/dashboard` when a session already exists.
 
 ### How Uploads & Analysis Work
 
