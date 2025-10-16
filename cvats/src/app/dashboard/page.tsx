@@ -661,6 +661,8 @@ export default function DashboardPage() {
             mime: file.type,
             size: file.size,
             publicId: cloudinary.publicId,
+            resourceType: cloudinary.resourceType,
+            accessMode: cloudinary.accessMode,
           }),
         });
 

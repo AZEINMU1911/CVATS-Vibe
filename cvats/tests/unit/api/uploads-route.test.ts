@@ -51,6 +51,8 @@ describe("POST /api/uploads", () => {
         mime: "application/pdf",
         size: 512_000,
         publicId: "cvats/test",
+        resourceType: "raw",
+        accessMode: "public",
       }),
     });
 
@@ -58,6 +60,26 @@ describe("POST /api/uploads", () => {
     expect(response.status).toBe(201);
     const payload = (await response.json()) as { cv: { fileName: string } };
     expect(payload.cv.fileName).toBe("candidate.pdf");
+  });
+
+  it("skips saving when Cloudinary upload is not raw/public", async () => {
+    getAuthSessionMock.mockResolvedValue({ user: { id: USER_ID } });
+    const request = new Request("http://localhost/api/uploads", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        fileUrl: "https://example.com/file.pdf",
+        originalName: "candidate.pdf",
+        mime: "application/pdf",
+        size: 512_000,
+        publicId: "cvats/test",
+        resourceType: "image",
+        accessMode: "authenticated",
+      }),
+    });
+
+    const response = await POST(request);
+    expect(response.status).toBe(502);
   });
 
   it("returns 404 when deleting unknown CV", async () => {
