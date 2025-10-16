@@ -57,9 +57,12 @@ if (process.env.NODE_ENV === "production") {
   requireEnv(["NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME", "NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET"]);
 }
 
+type CvWithSecureUrl = CV & { secureUrl?: string | null };
+
 const mapCv = (record: CV): CvRecord => {
-  const normalizedSecureUrl = typeof record.secureUrl === "string" && record.secureUrl.trim().length > 0
-    ? record.secureUrl
+  const { secureUrl } = record as CvWithSecureUrl;
+  const normalizedSecureUrl = typeof secureUrl === "string" && secureUrl.trim().length > 0
+    ? secureUrl
     : null;
   const normalizedFileUrl = typeof record.fileUrl === "string" && record.fileUrl.trim().length > 0
     ? record.fileUrl
