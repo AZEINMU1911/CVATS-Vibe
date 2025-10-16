@@ -17,6 +17,7 @@
 - Tailwind CSS is available globally; prefer utility classes over bespoke CSS.
 - Upload flows use Cloudinary unsigned uploads. Persist only URLs and metadata on the server.
 - Prisma uses the MongoDB provider; update the schema and run `npm run db:push` when models change.
+- All coding summary must be written in a raw .md format
 
 ## Testing Guide
 - Unit/API tests: `npm run test` (Vitest).
