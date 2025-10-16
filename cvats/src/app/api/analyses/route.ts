@@ -4,6 +4,14 @@ import { cvRepository } from "@/server/cv-repository";
 import { analysisRepository } from "@/server/analysis-repository";
 import { extractTextFromFile } from "@/server/analysis/text-extractor";
 import { scoreKeywords } from "@/server/analysis/score";
+import {
+  analyzeWithGemini,
+  GeminiQuotaError,
+  getGeminiCache,
+  setGeminiCache,
+  isGeminiCoolingDown,
+} from "@/server/analysis/gemini";
+import { checkRateLimit } from "@/server/rate-limit";
 import { getAuthSession } from "@/lib/auth/session";
 
 const DEFAULT_KEYWORDS = ["javascript", "react", "node", "typescript", "nextjs"] as const;
@@ -20,10 +28,15 @@ const mapKeywords = (keywords?: string[]): string[] => {
   return keywords.map((keyword) => keyword.trim()).filter((keyword) => keyword.length > 0);
 };
 
+const resolveModel = () => process.env.GEMINI_MODEL ?? "gemini-2.5-flash";
+
 export async function POST(request: Request) {
   const session = await getAuthSession();
   if (!session?.user?.id) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!checkRateLimit(`analysis:${session.user.id}`)) {
+    return NextResponse.json({ error: "Rate limit exceeded. Please wait before retrying." }, { status: 429 });
   }
   const json = await request.json().catch(() => null);
   const parsed = postSchema.safeParse(json);
@@ -48,20 +61,85 @@ export async function POST(request: Request) {
   }
 
   const trimmed = extractedText.trim();
-  const outcome =
+  const modelId = resolveModel();
+  const hasGemini = Boolean(process.env.GOOGLE_GEMINI_API_KEY);
+  const keywordOutcome =
     trimmed.length === 0
       ? { score: 0, keywordsMatched: [] }
       : scoreKeywords(trimmed, keywordList);
+  const unmatchedKeywords = keywordList.filter(
+    (keyword) => !keywordOutcome.keywordsMatched.includes(keyword),
+  );
 
-  if (trimmed.length === 0 && !message) {
-    message = "No readable text was found in this file.";
+  let summary = "";
+  let strengths: string[] = [];
+  let weaknesses: string[] = [];
+  let score: number | null = keywordOutcome.score;
+  let infoMessage = message;
+  let usedFallback = false;
+  let fallbackReason: string | null = null;
+
+  if (trimmed.length === 0) {
+    infoMessage = infoMessage ?? "No readable text was found in this file.";
+    weaknesses = keywordList;
+  } else if (hasGemini) {
+    const cached = getGeminiCache(cvId, keywordList, modelId);
+    if (cached) {
+      summary = cached.summary;
+      strengths = cached.strengths.length > 0 ? cached.strengths : keywordOutcome.keywordsMatched;
+      weaknesses = cached.weaknesses.length > 0 ? cached.weaknesses : unmatchedKeywords;
+      score = cached.overallScore;
+    } else if (isGeminiCoolingDown(modelId)) {
+      usedFallback = true;
+      fallbackReason = "COOLDOWN";
+      strengths = keywordOutcome.keywordsMatched;
+      weaknesses = unmatchedKeywords;
+      infoMessage = "Using basic analysis while AI service cools down.";
+    } else {
+      try {
+        const aiResult = await analyzeWithGemini(trimmed, { model: modelId });
+        summary = aiResult.summary;
+        strengths = aiResult.strengths.length > 0 ? aiResult.strengths : keywordOutcome.keywordsMatched;
+        weaknesses = aiResult.weaknesses.length > 0 ? aiResult.weaknesses : unmatchedKeywords;
+        score = aiResult.overallScore;
+        setGeminiCache(cvId, keywordList, modelId, aiResult);
+      } catch (error) {
+        if (error instanceof GeminiQuotaError) {
+          usedFallback = true;
+          fallbackReason = error.reason;
+          strengths = keywordOutcome.keywordsMatched;
+          weaknesses = unmatchedKeywords;
+          score = keywordOutcome.score;
+          infoMessage =
+            error.reason === "QUOTA"
+              ? "Using basic analysis due to AI quota limits."
+              : "Using basic analysis while AI service cools down.";
+        } else {
+          console.error("GEMINI_UNEXPECTED_ERROR", { model: modelId });
+          usedFallback = true;
+          fallbackReason = "ERROR";
+          strengths = keywordOutcome.keywordsMatched;
+          weaknesses = unmatchedKeywords;
+          score = keywordOutcome.score;
+          infoMessage = "Using basic analysis due to AI availability.";
+        }
+      }
+    }
+  } else {
+    strengths = keywordOutcome.keywordsMatched;
+    weaknesses = unmatchedKeywords;
   }
 
   const created = await analysisRepository.create({
     cvId,
-    score: outcome.score,
-    keywordsMatched: outcome.keywordsMatched,
-    message,
+    score,
+    summary: summary || null,
+    strengths,
+    weaknesses,
+    keywordsMatched: keywordOutcome.keywordsMatched,
+    message: infoMessage,
+    usedFallback,
+    fallbackReason,
   });
 
   return NextResponse.json(
@@ -69,9 +147,14 @@ export async function POST(request: Request) {
       analysis: {
         id: created.id,
         cvId: created.cvId,
-        score: outcome.score,
-        keywordsMatched: outcome.keywordsMatched,
-        message,
+        score: created.score,
+        summary: created.summary,
+        strengths: created.strengths,
+        weaknesses: created.weaknesses,
+        keywordsMatched: created.keywordsMatched,
+        message: created.message,
+        usedFallback: created.usedFallback,
+        fallbackReason: created.fallbackReason,
         createdAt: created.createdAt,
       },
     },

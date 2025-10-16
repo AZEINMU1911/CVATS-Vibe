@@ -45,17 +45,25 @@ NEXT_PUBLIC_MAX_FILE_MB=8
 NEXT_PUBLIC_ALLOWED_MIME=application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document
 NEXTAUTH_URL=http://localhost:3000
 NEXTAUTH_SECRET=replace-with-strong-secret
+GOOGLE_GEMINI_API_KEY=""
+GEMINI_MODEL=gemini-2.5-flash
+GEMINI_MAX_TOKENS=1024
+GEMINI_MAX_RETRIES=3
+GEMINI_COOLDOWN_SECONDS=60
+GEMINI_CACHE_TTL_SECONDS=3600
 ```
 
 ### Testing Notes
 
 Vitest covers utility and API logic (including upload validation and persistence). Playwright validates marketing navigation and the Cloudinary → metadata flow using a stubbed upload response. CI executes linting, type checking, unit tests, and e2e tests on every push.
 
-### CV Analysis MVP
+### CV Analysis
 
-- `/api/analyses` extracts text from the stored file (PDF via a lightweight parser, DOCX currently returns an empty string until a lightweight extractor is added) and scores keyword coverage.
-- Scoring is deterministic: `scoreKeywords` lowercases both the text and keywords, ignores duplicates, and returns a 0–100 score with the matched keywords.
-- The dashboard renders an **Analyze** button per CV. Results surface inline with matched keywords and any extraction warnings.
+- `/api/analyses` extracts text from the stored file (PDF via a lightweight parser, DOCX currently returns an empty string until a lightweight extractor is added) and, when configured, sends a redacted version to Google Gemini for strengths, weaknesses, and overall fit scoring.
+- If `GOOGLE_GEMINI_API_KEY` is not supplied, the route falls back to deterministic keyword scoring so local development and offline modes still behave predictably.
+- Requests are rate limited (10 analyses per minute, per user) and oversized resumes are summarized in chunks before reaching Gemini to stay within token limits.
+- The dashboard renders an **Analyze** button per CV. Results surface inline with the AI summary plus strengths/weaknesses, alongside any keyword matches or warnings.
+- When Gemini is unavailable (quota/cooldown), the API falls back to keyword scoring and returns `usedFallback` metadata so the UI can explain the graceful degradation.
 
 ### CV Management
 
@@ -76,7 +84,7 @@ Vitest covers utility and API logic (including upload validation and persistence
 ### Limitations & TODOs
 
 - DOCX extraction is currently stubbed (returns an empty string) until a lightweight parser is integrated.
-- Keyword scoring is rule-based; no ML ranking yet, and synonyms are not handled.
+- Without Gemini configured the app relies on deterministic keyword scoring, so advanced semantic matching depends on providing an API key.
 - Auth uses credential-based email/password; swap in OAuth/social providers before going to production and ensure stronger password policies + rate limiting for a hardened setup.
 - No UI for editing metadata or re-running analyses with custom keyword sets (support is API-level only).
 - In dev/test modes, data falls back to in-memory stores—great for local hacking, not persistent.

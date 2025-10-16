@@ -5,7 +5,7 @@ import type { Page } from "@playwright/test";
 test.describe.configure({ mode: "serial" });
 test.setTimeout(120_000);
 
-const getCvItems = (page: Page) => page.locator("main li");
+const getCvItems = (page: Page) => page.locator('[data-testid="cv-card"]');
 
 const setupAppRoutes = async (page: Page) => {
   await page.route("https://api.cloudinary.com/**", async (route) => {
@@ -29,9 +29,14 @@ const setupAppRoutes = async (page: Page) => {
           analysis: {
             id: "test-analysis",
             cvId: route.request().postDataJSON()?.cvId ?? "cv",
-            score: 100,
+            score: 91,
+            summary: "Demonstrates solid frontend expertise with collaborative wins.",
+            strengths: ["Strong React expertise", "Team leadership"],
+            weaknesses: ["Needs more backend exposure"],
             keywordsMatched: ["javascript", "react", "node", "typescript", "nextjs"],
-            message: null,
+            message: "Using basic analysis due to AI quota limits.",
+            usedFallback: true,
+            fallbackReason: "QUOTA",
             createdAt: new Date().toISOString(),
           },
         }),
@@ -130,6 +135,14 @@ test("register, upload, and isolate CVs per user", async ({ page, browser }) => 
   await expect(newestCard.getByRole("link", { name: "sample.pdf" })).toBeVisible();
   await newestCard.getByRole("button", { name: "Analyze" }).click();
   await expect(newestCard.getByText(/Score:/i)).toBeVisible({ timeout: 12000 });
+  await expect(
+    newestCard.getByText("Demonstrates solid frontend expertise with collaborative wins.", {
+      exact: false,
+    }),
+  ).toBeVisible();
+  await expect(newestCard.getByText("Strong React expertise", { exact: false })).toBeVisible();
+  await expect(newestCard.getByText("Needs more backend exposure", { exact: false })).toBeVisible();
+  await expect(newestCard.getByText("Using basic analysis due to AI quota limits.")).toBeVisible();
 
   const items = getCvItems(page);
   const countBeforeDelete = await items.count();

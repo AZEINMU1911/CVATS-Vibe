@@ -293,7 +293,10 @@ const CvCard = ({ cv, onDelete }: { cv: CvSummary; onDelete: (id: string) => Pro
   };
 
   return (
-    <li className="group transform rounded-2xl border border-slate-200 bg-white px-5 py-4 text-sm transition hover:-translate-y-1 hover:border-blue-200 hover:shadow-lg dark:border-slate-700 dark:bg-slate-900/60">
+  <li
+    data-testid="cv-card"
+    className="group transform rounded-2xl border border-slate-200 bg-white px-5 py-4 text-sm transition hover:-translate-y-1 hover:border-blue-200 hover:shadow-lg dark:border-slate-700 dark:bg-slate-900/60"
+  >
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-col">
           <a
@@ -390,25 +393,63 @@ const CvCard = ({ cv, onDelete }: { cv: CvSummary; onDelete: (id: string) => Pro
                 <span className="font-semibold">Score: {analysis.score ?? 0}</span>
                 <span>{new Date(analysis.createdAt).toLocaleTimeString()}</span>
               </div>
-              {analysis.message ? (
-                <p className="mt-1 text-[11px] text-blue-700 dark:text-blue-200/80">{analysis.message}</p>
+              {analysis.usedFallback ? (
+                <span className="mt-2 inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:bg-amber-500/20 dark:text-amber-200">
+                  Basic analysis ({analysis.fallbackReason ?? "fallback"})
+                </span>
               ) : null}
-              <div className="mt-2 flex flex-wrap gap-2">
-                {analysis.keywordsMatched.length > 0 ? (
-                  analysis.keywordsMatched.map((keyword) => (
+              {analysis.summary ? (
+                <p className="mt-2 text-[11px] leading-relaxed text-blue-800 dark:text-blue-200/80">
+                  {analysis.summary}
+                </p>
+              ) : null}
+              <div className="mt-3 grid gap-3 text-[11px] text-blue-800 dark:text-blue-200/80 sm:grid-cols-2">
+                <div>
+                  <p className="font-semibold uppercase tracking-wide text-[10px] text-blue-700 dark:text-blue-200">
+                    Strengths
+                  </p>
+                  {analysis.strengths.length > 0 ? (
+                    <ul className="ml-3 mt-1 list-disc space-y-1">
+                      {analysis.strengths.map((item) => (
+                        <li key={item}>{item}</li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="mt-1 text-blue-700/80 dark:text-blue-200/60">None identified.</p>
+                  )}
+                </div>
+                <div>
+                  <p className="font-semibold uppercase tracking-wide text-[10px] text-blue-700 dark:text-blue-200">
+                    Weaknesses
+                  </p>
+                  {analysis.weaknesses.length > 0 ? (
+                    <ul className="ml-3 mt-1 list-disc space-y-1">
+                      {analysis.weaknesses.map((item) => (
+                        <li key={item}>{item}</li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="mt-1 text-blue-700/80 dark:text-blue-200/60">None noted.</p>
+                  )}
+                </div>
+              </div>
+              {analysis.keywordsMatched.length > 0 ? (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {analysis.keywordsMatched.map((keyword) => (
                     <span
                       key={keyword}
                       className="rounded-full bg-white/70 px-2 py-0.5 text-[11px] font-medium text-blue-700 dark:bg-blue-400/20 dark:text-blue-100"
                     >
                       {keyword}
                     </span>
-                  ))
-                ) : (
-                  <span className="text-[11px] text-blue-700 dark:text-blue-200/80">
-                    No keywords matched.
-                  </span>
-                )}
-              </div>
+                  ))}
+                </div>
+              ) : null}
+              {analysis.message ? (
+                <p className="mt-3 text-[11px] italic text-blue-700/80 dark:text-blue-200/70">
+                  {analysis.message}
+                </p>
+              ) : null}
             </div>
           ))}
         </div>
