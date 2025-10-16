@@ -30,8 +30,6 @@ export interface CvRepository {
   reset?: () => void;
 }
 
-export const STUB_USER_ID = "000000000000000000000000";
-
 const shouldUseMemory =
   process.env.NODE_ENV === "test" || !process.env.DATABASE_URL;
 

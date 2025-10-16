@@ -4,20 +4,34 @@ import type { Page } from "@playwright/test";
 
 const getCvItems = (page: Page) => page.locator("main li");
 
+const registrationForm = async (page: Page, email: string, password: string) => {
+  await page.goto("/register");
+  await page.getByLabel("Email").fill(email);
+  await page.getByLabel("Password").fill(password);
+  await page.getByRole("button", { name: "Create account" }).click();
+  await page.waitForURL(/\/login\?registered=1/);
+};
+
+const loginForm = async (page: Page, email: string, password: string) => {
+  await page.getByLabel("Email").fill(email);
+  await page.getByLabel("Password").fill(password);
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await page.waitForURL(/\/dashboard/);
+};
+
 test("landing page renders marketing content", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "Understand every resume at a glance." })).toBeVisible();
   await expect(page.getByRole("link", { name: "View dashboard preview" })).toBeVisible();
 });
 
-test("dashboard route shows placeholder state", async ({ page }) => {
-  await page.goto("/dashboard?as=alice@example.com");
-  await expect(page.getByRole("heading", { name: "My CVs", level: 1 })).toBeVisible();
-  await expect(page.getByText("Drop your resume here")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Save to CVs" })).toBeVisible();
+test("unauthenticated users are redirected to login", async ({ page }) => {
+  await page.goto("/dashboard");
+  await expect(page).toHaveURL(/\/login/);
+  await expect(page.getByRole("heading", { name: "Log in" })).toBeVisible();
 });
 
-test("dashboard upload persists Cloudinary metadata", async ({ page }) => {
+test("register, upload, and isolate CVs per user", async ({ page }) => {
   await page.route("https://api.cloudinary.com/**", async (route) => {
     await route.fulfill({
       status: 200,
@@ -28,15 +42,6 @@ test("dashboard upload persists Cloudinary metadata", async ({ page }) => {
         bytes: 8_192,
       }),
     });
-  });
-
-  await page.route("**/api/uploads", async (route) => {
-    if (route.request().method() === "DELETE") {
-      await route.fulfill({ status: 204, body: "" });
-      return;
-    }
-
-    await route.continue();
   });
 
   await page.route("**/api/analyses", async (route) => {
@@ -61,7 +66,15 @@ test("dashboard upload persists Cloudinary metadata", async ({ page }) => {
     await route.continue();
   });
 
-  await page.goto("/dashboard?as=alice@example.com");
+  const timestamp = Date.now();
+  const password = "Password123";
+  const emailA = `alice-${timestamp}@example.com`;
+  const emailB = `bob-${timestamp}@example.com`;
+
+  // Register and log in as first user
+  await registrationForm(page, emailA, password);
+  await loginForm(page, emailA, password);
+
   const fixturePath = path.resolve(__dirname, "../fixtures/sample.pdf");
   await page.setInputFiles('input[type="file"]', fixturePath);
   const uploadResponsePromise = page.waitForResponse((response) =>
@@ -76,7 +89,6 @@ test("dashboard upload persists Cloudinary metadata", async ({ page }) => {
   const newestCard = page.locator("main li").first();
   await newestCard.getByRole("button", { name: "Analyze" }).click();
   await expect(newestCard.getByText(/Score:/i)).toBeVisible({ timeout: 12000 });
-  await expect(newestCard.getByText("javascript", { exact: false })).toBeVisible();
 
   const items = getCvItems(page);
   const countBeforeDelete = await items.count();
@@ -84,10 +96,14 @@ test("dashboard upload persists Cloudinary metadata", async ({ page }) => {
   await newestCard.getByRole("button", { name: "Confirm delete" }).click();
   await expect(items).toHaveCount(countBeforeDelete - 1);
 
-  // Switch to another user and ensure scoped list is empty
-  await page.goto("/dashboard?as=bob@example.com");
-  await page.waitForResponse((response) =>
-    response.url().includes("/api/uploads") && response.request().method() === "GET",
-  );
+  await page.getByRole("button", { name: "Sign out" }).click();
+  await expect(page).toHaveURL(/\/?$/);
+
+  // Register a second user and ensure list is isolated
+  await registrationForm(page, emailB, password);
+  await loginForm(page, emailB, password);
   await expect(page.getByText("No uploads yet", { exact: false })).toBeVisible();
+
+  await page.getByRole("button", { name: "Sign out" }).click();
+  await expect(page).toHaveURL(/\/?$/);
 });

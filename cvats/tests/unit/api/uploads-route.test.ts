@@ -1,22 +1,26 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { DELETE, POST } from "@/app/api/uploads/route";
 import { resetCvRepository } from "@/server/cv-repository";
-import { AUTH_COOKIE_NAME } from "@/lib/auth-constants";
-import { getUserIdByEmail } from "@/server/auth";
 
-const USER_EMAIL = "unit@example.com";
-const cookieHeader = `${AUTH_COOKIE_NAME}=${USER_EMAIL}`;
-getUserIdByEmail(USER_EMAIL);
+const getAuthSessionMock = vi.fn();
+
+vi.mock("@/lib/auth/session", () => ({
+  getAuthSession: () => getAuthSessionMock(),
+}));
+
+const USER_ID = "user-test-id";
 
 describe("POST /api/uploads", () => {
   afterEach(() => {
     resetCvRepository();
+    getAuthSessionMock.mockReset();
   });
 
   it("returns 400 when required fields are missing", async () => {
+    getAuthSessionMock.mockResolvedValue({ user: { id: USER_ID } });
     const request = new Request("http://localhost/api/uploads", {
       method: "POST",
-      headers: { "content-type": "application/json", cookie: cookieHeader },
+      headers: { "content-type": "application/json" },
       body: JSON.stringify({}),
     });
 
@@ -24,10 +28,23 @@ describe("POST /api/uploads", () => {
     expect(response.status).toBe(400);
   });
 
-  it("persist metadata and returns 201 for valid payload", async () => {
+  it("returns 401 when unauthenticated", async () => {
+    getAuthSessionMock.mockResolvedValue(null);
     const request = new Request("http://localhost/api/uploads", {
       method: "POST",
-      headers: { "content-type": "application/json", cookie: cookieHeader },
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    });
+
+    const response = await POST(request);
+    expect(response.status).toBe(401);
+  });
+
+  it("persist metadata and returns 201 for valid payload", async () => {
+    getAuthSessionMock.mockResolvedValue({ user: { id: USER_ID } });
+    const request = new Request("http://localhost/api/uploads", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
       body: JSON.stringify({
         fileUrl: "https://example.com/file.pdf",
         originalName: "candidate.pdf",
@@ -44,9 +61,10 @@ describe("POST /api/uploads", () => {
   });
 
   it("returns 404 when deleting unknown CV", async () => {
+    getAuthSessionMock.mockResolvedValue({ user: { id: USER_ID } });
     const request = new Request("http://localhost/api/uploads?id=missing", {
       method: "DELETE",
-      headers: { cookie: cookieHeader },
+      headers: {},
     });
 
     const response = await DELETE(request);

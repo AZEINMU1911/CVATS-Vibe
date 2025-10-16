@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { cvRepository } from "@/server/cv-repository";
 import { validateFile } from "@/lib/validate-file";
-import { getCurrentUser } from "@/server/auth";
+import { getAuthSession } from "@/lib/auth/session";
 
 const payloadSchema = z.object({
   fileUrl: z.string().url(),
@@ -26,7 +26,10 @@ const readJson = async (request: Request): Promise<unknown> => {
 };
 
 export async function POST(request: Request) {
-  const user = getCurrentUser(request);
+  const session = await getAuthSession();
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
   const raw = await readJson(request);
   const parseResult = payloadSchema.safeParse(raw);
 
@@ -43,7 +46,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    const created = await cvRepository.createForUser(user.id, {
+    const created = await cvRepository.createForUser(session.user.id, {
       fileName: originalName,
       fileUrl,
       fileSize: size,
@@ -68,9 +71,12 @@ const getPaginationParams = (request: Request) => {
 };
 
 export async function GET(request: Request) {
-  const user = getCurrentUser(request);
+  const session = await getAuthSession();
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
   const { limit, cursor } = getPaginationParams(request);
-  const { items, nextCursor } = await cvRepository.listPage(user.id, limit, cursor);
+  const { items, nextCursor } = await cvRepository.listPage(session.user.id, limit, cursor);
   return NextResponse.json({ cvs: items, nextCursor }, { status: 200 });
 }
 
@@ -79,7 +85,10 @@ const deleteSchema = z.object({
 });
 
 export async function DELETE(request: Request) {
-  const user = getCurrentUser(request);
+  const session = await getAuthSession();
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
   const { searchParams } = new URL(request.url);
   const rawId = searchParams.get("id");
   const parsed = deleteSchema.safeParse({ id: rawId });
@@ -87,7 +96,7 @@ export async function DELETE(request: Request) {
     return NextResponse.json({ error: "id query param is required" }, { status: 400 });
   }
 
-  const deleted = await cvRepository.deleteById(parsed.data.id, user.id);
+  const deleted = await cvRepository.deleteById(parsed.data.id, session.user.id);
   if (!deleted) {
     return NextResponse.json({ error: "CV not found" }, { status: 404 });
   }
