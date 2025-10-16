@@ -7,18 +7,24 @@ test.setTimeout(120_000);
 
 const getCvItems = (page: Page) => page.locator('[data-testid="cv-card"]');
 
-const setupAppRoutes = async (page: Page) => {
+const setupAppRoutes = async (page: Page, cloudinaryOverrides?: Record<string, unknown>) => {
   await page.route("https://api.cloudinary.com/**", async (route) => {
+    const payload = {
+      secure_url: "http://127.0.0.1:3000/fixtures/sample.pdf",
+      public_id: "cvats/sample",
+      bytes: 8_192,
+      resource_type: "raw",
+      access_mode: "public",
+      type: "upload",
+      format: "pdf",
+      original_filename: "sample",
+      created_at: "2024-01-01T00:00:00Z",
+      ...cloudinaryOverrides,
+    };
     await route.fulfill({
       status: 200,
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        secure_url: "http://127.0.0.1:3000/fixtures/sample.pdf",
-        public_id: "cvats/sample",
-        bytes: 8_192,
-        resource_type: "raw",
-        access_mode: "public",
-      }),
+      body: JSON.stringify(payload),
     });
   });
 
@@ -205,4 +211,30 @@ test("register, upload, and isolate CVs per user", async ({ page, browser }) => 
   await secondPage.getByRole("button", { name: "Sign out" }).click();
   await expect(secondPage).toHaveURL(/\/?$/);
   await secondContext.close();
+});
+
+test("blocks uploads when Cloudinary preset is not public/raw", async ({ page }) => {
+  let uploadsCalled = false;
+  await page.route("**/api/uploads", async (route) => {
+    uploadsCalled = true;
+    await route.fulfill({ status: 500, body: JSON.stringify({ error: "should not be called" }) });
+  });
+  await setupAppRoutes(page, { access_mode: "authenticated" });
+
+  const timestamp = Date.now();
+  const password = "Password123";
+  const email = `cloudinary-misconfig-${timestamp}@example.com`;
+
+  await registrationForm(page, email, password);
+  await loginForm(page, email, password);
+
+  const fixturePath = path.resolve(__dirname, "../fixtures/sample.pdf");
+  await page.setInputFiles('input[type="file"]', fixturePath);
+  await page.getByRole("button", { name: "Save to CVs" }).click();
+
+  await expect(page.getByText("Upload preset misconfigured (must be Public/Raw).", { exact: false })).toBeVisible();
+  expect(uploadsCalled).toBe(false);
+
+  await page.getByRole("button", { name: "Sign out" }).click();
+  await expect(page).toHaveURL(/\/?$/);
 });

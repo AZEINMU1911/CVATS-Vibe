@@ -23,16 +23,24 @@ model CV {
   userId      String     @db.ObjectId
   user        User       @relation(fields: [userId], references: [id], onDelete: Cascade)
   fileName    String
-  fileUrl     String
-  publicId    String?
+  secureUrl   String
+  publicId    String
+  resourceType String
+  accessMode   String
+  type         String
+  fileUrl     String?   // legacy
   fileSize    Int
   mimeType    String
+  bytes       Int?
+  format      String?
+  originalFilename String?
+  createdAtRaw String?
   atsScore    Int?
   analyzedAt  DateTime?
   analysisHistories AnalysisHistory[]
   uploadedAt  DateTime   @default(now())
 
-  @@index([userId])
+  @@index([userId, uploadedAt])
 }
 
 model AnalysisHistory {

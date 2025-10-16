@@ -46,20 +46,29 @@ describe("POST /api/uploads", () => {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        fileUrl: "https://example.com/file.pdf",
-        originalName: "candidate.pdf",
-        mime: "application/pdf",
-        size: 512_000,
-        publicId: "cvats/test",
-        resourceType: "raw",
-        accessMode: "public",
+        secure_url: "https://res.cloudinary.com/demo/raw/upload/v1/candidate.pdf",
+        public_id: "cvats/test",
+        resource_type: "raw",
+        access_mode: "public",
+        type: "upload",
+        bytes: 512_000,
+        format: "pdf",
+        original_filename: "candidate",
+        created_at: "2024-01-01T00:00:00Z",
+        mimeType: "application/pdf",
       }),
     });
 
     const response = await POST(request);
     expect(response.status).toBe(201);
-    const payload = (await response.json()) as { cv: { fileName: string } };
+    const payload = (await response.json()) as {
+      cv: { fileName: string; secureUrl: string; resourceType?: string | null; accessMode?: string | null; type?: string | null };
+    };
     expect(payload.cv.fileName).toBe("candidate.pdf");
+    expect(payload.cv.secureUrl).toBe("https://res.cloudinary.com/demo/raw/upload/v1/candidate.pdf");
+    expect(payload.cv.resourceType).toBe("raw");
+    expect(payload.cv.accessMode).toBe("public");
+    expect(payload.cv.type).toBe("upload");
   });
 
   it("skips saving when Cloudinary upload is not raw/public", async () => {
@@ -68,18 +77,23 @@ describe("POST /api/uploads", () => {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        fileUrl: "https://example.com/file.pdf",
-        originalName: "candidate.pdf",
-        mime: "application/pdf",
-        size: 512_000,
-        publicId: "cvats/test",
-        resourceType: "image",
-        accessMode: "authenticated",
+        secure_url: "https://res.cloudinary.com/demo/image/upload/v1/candidate.pdf",
+        public_id: "cvats/test",
+        resource_type: "image",
+        access_mode: "authenticated",
+        type: "upload",
+        bytes: 512_000,
+        format: "pdf",
+        original_filename: "candidate",
+        created_at: "2024-01-01T00:00:00Z",
+        mimeType: "application/pdf",
       }),
     });
 
     const response = await POST(request);
-    expect(response.status).toBe(502);
+    expect(response.status).toBe(422);
+    const body = (await response.json()) as { error?: string };
+    expect(body.error).toBe("CLOUDINARY_PRESET_NOT_PUBLIC_RAW");
   });
 
   it("returns 404 when deleting unknown CV", async () => {

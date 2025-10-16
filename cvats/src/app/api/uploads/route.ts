@@ -5,13 +5,16 @@ import { validateFile } from "@/lib/validate-file";
 import { getAuthSession } from "@/lib/auth/session";
 
 const payloadSchema = z.object({
-  fileUrl: z.string().url(),
-  originalName: z.string().min(1).max(512),
-  mime: z.string().min(1).max(256),
-  size: z.number().int().positive(),
-  publicId: z.string().min(1).max(256).optional(),
-  resourceType: z.string().min(1),
-  accessMode: z.string().min(1),
+  secure_url: z.string().url(),
+  public_id: z.string().min(1).max(512),
+  resource_type: z.string().min(1),
+  access_mode: z.string().min(1),
+  type: z.string().min(1),
+  bytes: z.number().int().positive().optional(),
+  format: z.string().min(1).max(64).optional().nullable(),
+  original_filename: z.string().min(1).max(512).optional().nullable(),
+  created_at: z.string().min(1).max(128).optional().nullable(),
+  mimeType: z.string().min(1).max(256),
 });
 
 const validationMessages: Record<"invalid-type" | "file-too-large", string> = {
@@ -39,35 +42,71 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Invalid payload", details: parseResult.error.format() }, { status: 400 });
   }
 
-  const { originalName, mime, size, fileUrl, publicId, resourceType, accessMode } = parseResult.data;
-  const validation = validateFile({ size, type: mime, name: originalName });
+  const {
+    secure_url,
+    public_id,
+    resource_type,
+    access_mode,
+    type,
+    bytes,
+    format,
+    original_filename,
+    created_at,
+    mimeType,
+  } = parseResult.data;
+
+  const normalizedResource = resource_type.toLowerCase();
+  const normalizedAccess = access_mode.toLowerCase();
+  const normalizedType = type.toLowerCase();
+
+  if (normalizedResource !== "raw" || normalizedAccess !== "public" || normalizedType !== "upload") {
+    console.error("UPLOAD_INVALID_RESOURCE", {
+      resourceType: normalizedResource,
+      accessMode: normalizedAccess,
+      deliveryType: normalizedType,
+      secureUrl: secure_url,
+    });
+    return NextResponse.json(
+      { error: "CLOUDINARY_PRESET_NOT_PUBLIC_RAW" },
+      { status: 422 },
+    );
+  }
+
+  const fileSize = typeof bytes === "number" && Number.isFinite(bytes) ? bytes : undefined;
+  const derivedNameBase =
+    typeof original_filename === "string" && original_filename.trim().length > 0
+      ? original_filename.trim()
+      : public_id.split("/").pop() ?? "document";
+  const derivedExtension =
+    typeof format === "string" && format.trim().length > 0 ? `.${format.trim()}` : "";
+  const resolvedFileName = `${derivedNameBase}${derivedExtension}`;
+  const sizeForValidation = fileSize && fileSize > 0 ? fileSize : 1;
+
+  const validation = validateFile({
+    size: sizeForValidation,
+    type: mimeType,
+    name: resolvedFileName,
+  });
 
   if (!validation.ok) {
     const message = validationMessages[validation.error];
     return NextResponse.json({ error: message }, { status: 400 });
   }
 
-  const normalizedResource = resourceType.toLowerCase();
-  const normalizedAccess = accessMode.toLowerCase();
-  if (normalizedResource !== "raw" || normalizedAccess !== "public") {
-    console.error("UPLOAD_INVALID_RESOURCE", {
-      resourceType: normalizedResource,
-      accessMode: normalizedAccess,
-      fileUrl,
-    });
-    return NextResponse.json(
-      { error: "Cloudinary upload is not publicly accessible. Please retry later." },
-      { status: 502 },
-    );
-  }
-
   try {
     const created = await cvRepository.createForUser(session.user.id, {
-      fileName: originalName,
-      fileUrl,
-      fileSize: size,
-      mimeType: mime,
-      publicId: publicId ?? null,
+      fileName: resolvedFileName,
+      secureUrl: secure_url,
+      publicId: public_id,
+      resourceType: normalizedResource,
+      accessMode: normalizedAccess,
+      type: normalizedType,
+      fileSize: fileSize ?? sizeForValidation ?? 0,
+      mimeType,
+      bytes: fileSize ?? null,
+      format: format ?? null,
+      originalFilename: derivedNameBase,
+      createdAtRaw: created_at ?? null,
     });
 
     return NextResponse.json({ cv: created }, { status: 201 });

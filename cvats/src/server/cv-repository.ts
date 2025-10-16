@@ -1,26 +1,43 @@
 import { randomUUID } from "node:crypto";
 import type { CV } from "@prisma/client";
 import { PrismaClient } from "@prisma/client";
+import { requireEnv } from "@/server/env";
 
 export interface CvRecord {
   id: string;
   userId?: string;
   fileName: string;
-  fileUrl: string;
+  secureUrl: string;
+  fileUrl?: string | null;
   fileSize: number;
+  bytes?: number | null;
   mimeType: string;
+  format?: string | null;
   uploadedAt: string;
   publicId?: string | null;
+  resourceType?: string | null;
+  accessMode?: string | null;
+  type?: string | null;
+  originalFilename?: string | null;
+  createdAtRaw?: string | null;
   atsScore?: number | null;
   analyzedAt?: string | null;
 }
 
 export interface CreateCvInput {
   fileName: string;
-  fileUrl: string;
+  secureUrl: string;
+  publicId: string;
+  resourceType: string;
+  accessMode: string;
+  type: string;
   fileSize: number;
   mimeType: string;
-  publicId?: string | null;
+  bytes?: number | null;
+  format?: string | null;
+  originalFilename?: string | null;
+  createdAtRaw?: string | null;
+  legacyFileUrl?: string | null;
 }
 
 export interface CvRepository {
@@ -36,18 +53,39 @@ export interface CvRepository {
 const shouldUseMemory =
   process.env.NODE_ENV === "test" || !process.env.DATABASE_URL;
 
-const mapCv = (record: CV): CvRecord => ({
-  id: record.id,
-  userId: record.userId,
-  fileName: record.fileName,
-  fileUrl: record.fileUrl,
-  fileSize: record.fileSize,
-  mimeType: record.mimeType,
-  uploadedAt: record.uploadedAt.toISOString(),
-  publicId: record.publicId,
-  atsScore: record.atsScore ?? null,
-  analyzedAt: record.analyzedAt ? record.analyzedAt.toISOString() : null,
-});
+if (process.env.NODE_ENV === "production") {
+  requireEnv(["NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME", "NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET"]);
+}
+
+const mapCv = (record: CV): CvRecord => {
+  const normalizedSecureUrl = typeof record.secureUrl === "string" && record.secureUrl.trim().length > 0
+    ? record.secureUrl
+    : null;
+  const normalizedFileUrl = typeof record.fileUrl === "string" && record.fileUrl.trim().length > 0
+    ? record.fileUrl
+    : null;
+
+  return {
+    id: record.id,
+    userId: record.userId,
+    fileName: record.fileName,
+    secureUrl: normalizedSecureUrl ?? normalizedFileUrl ?? "",
+    fileUrl: normalizedFileUrl,
+    fileSize: record.fileSize,
+    bytes: record.bytes ?? null,
+    mimeType: record.mimeType,
+    format: record.format ?? null,
+    uploadedAt: record.uploadedAt.toISOString(),
+    publicId: record.publicId ?? null,
+    resourceType: record.resourceType ?? null,
+    accessMode: record.accessMode ?? null,
+    type: record.type ?? null,
+    originalFilename: record.originalFilename ?? null,
+    createdAtRaw: record.createdAtRaw ?? null,
+    atsScore: record.atsScore ?? null,
+    analyzedAt: record.analyzedAt ? record.analyzedAt.toISOString() : null,
+  };
+};
 
 const createPrismaRepository = (): CvRepository => {
   const prismaGlobal = globalThis as typeof globalThis & { prismaInstance?: PrismaClient };
@@ -69,10 +107,18 @@ const createPrismaRepository = (): CvRepository => {
         data: {
           userId,
           fileName: input.fileName,
-          fileUrl: input.fileUrl,
+          secureUrl: input.secureUrl,
+          publicId: input.publicId,
+          resourceType: input.resourceType,
+          accessMode: input.accessMode,
+          type: input.type,
+          fileUrl: input.legacyFileUrl ?? null,
           fileSize: input.fileSize,
           mimeType: input.mimeType,
-          publicId: input.publicId ?? null,
+          bytes: input.bytes ?? null,
+          format: input.format ?? null,
+          originalFilename: input.originalFilename ?? null,
+          createdAtRaw: input.createdAtRaw ?? null,
         },
       });
       return mapCv(created);
@@ -130,11 +176,19 @@ const createMemoryRepository = (): CvRepository => {
         id: randomUUID(),
         userId,
         fileName: input.fileName,
-        fileUrl: input.fileUrl,
+        secureUrl: input.secureUrl,
+        fileUrl: input.legacyFileUrl ?? null,
         fileSize: input.fileSize,
+        bytes: input.bytes ?? null,
         mimeType: input.mimeType,
+        format: input.format ?? null,
         uploadedAt: new Date().toISOString(),
-        publicId: input.publicId ?? null,
+        publicId: input.publicId,
+        resourceType: input.resourceType,
+        accessMode: input.accessMode,
+        type: input.type,
+        originalFilename: input.originalFilename ?? null,
+        createdAtRaw: input.createdAtRaw ?? null,
       };
       const nextItems = itemsByUser.get(userId) ?? [];
       itemsByUser.set(userId, [record, ...nextItems]);

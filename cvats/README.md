@@ -33,7 +33,7 @@ Visit `http://localhost:3000` for the marketing site and `http://localhost:3000/
 
 ### Environment
 
-Copy `.env.example` to `.env.local` and supply values for MongoDB, Cloudinary, and NextAuth. Client uploads use an unsigned Cloudinary preset (no secrets in the browser). The server persists CVs to MongoDB when `DATABASE_URL` is defined (otherwise it falls back to in-memory repositories for local development).
+Copy `.env.example` to `.env.local` and supply values for MongoDB, Cloudinary, and NextAuth. Client uploads use an unsigned Cloudinary preset (no secrets in the browser) that must be configured for **resource type Raw** and **Public access mode**. The server persists CVs to MongoDB when `DATABASE_URL` is defined (otherwise it falls back to in-memory repositories for local development).
 
 Expose the following variables (see `.env.example`):
 
@@ -77,7 +77,7 @@ Vitest covers utility and API logic (including upload validation and persistence
 
 1. Users register and log in with email/password; Auth.js issues an encrypted session cookie (JWT strategy).
 2. The dashboard sends files directly from the browser to Cloudinary using the unsigned preset.
-3. Once Cloudinary responds, the client calls `POST /api/uploads` with the returned URL and metadata; the API validates the payload, associates it with the active session user, and stores it via Prisma (or memory in dev/tests).
+3. Once Cloudinary responds, the client calls `POST /api/uploads` with the verbatim `secure_url`, `public_id`, `resource_type`, `access_mode`, `type`, and related metadata. The API double-checks the preset is `raw/public`, associates the document with the session user, and stores the `secure_url` as the canonical delivery link (via Prisma or the in-memory repo in dev/tests).
 4. Triggering **Analyze** calls `POST /api/analyses`. The API fetches the stored CV, sends it to Gemini (inline first, file upload second if needed), validates the strict JSON response, and then persists the result with fallback metadata. If both AI attempts fail we score locally and label the run with `fallbackReason: "EMPTY"`.
 5. Users can request `GET /api/uploads`/`GET /api/analyses` to fetch their own assets; pagination keeps responses trim.
 

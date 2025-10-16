@@ -1,15 +1,11 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import {
+  uploadPresetErrorMessage,
+  uploadResumeToCloudinary,
+  type CloudinaryUploadResult,
+} from "@/lib/cloudinary/upload";
 
 export type UploadStatus = "idle" | "uploading" | "success" | "error";
-
-export interface CloudinaryUploadResult {
-  fileUrl: string;
-  bytes: number;
-  publicId?: string;
-  format?: string;
-  resourceType: string;
-  accessMode: string;
-}
 
 export const useUploadToCloudinary = () => {
   const cloudName = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME?.trim() ?? "";
@@ -21,6 +17,12 @@ export const useUploadToCloudinary = () => {
 
   const [status, setStatus] = useState<UploadStatus>(isConfigured ? "idle" : "error");
   const [error, setError] = useState<string | null>(configurationError);
+
+  useEffect(() => {
+    if (process.env.NODE_ENV === "development") {
+      console.log("CLD", cloudName, uploadPreset);
+    }
+  }, [cloudName, uploadPreset]);
 
   const upload = useCallback(
     async (file: File): Promise<CloudinaryUploadResult> => {
@@ -35,66 +37,25 @@ export const useUploadToCloudinary = () => {
 
       setError(null);
       setStatus("uploading");
-      const formData = new FormData();
-      formData.append("file", file);
-      formData.append("upload_preset", uploadPreset);
-      formData.append("resource_type", "raw");
-
-      const response = await fetch(
-        `https://api.cloudinary.com/v1_1/${cloudName}/auto/upload`,
-        {
-          method: "POST",
-          body: formData,
-        },
-      );
-
-      if (!response.ok) {
+      try {
+        const result = await uploadResumeToCloudinary({
+          file,
+          cloudName,
+          uploadPreset,
+        });
+        setStatus("success");
+        return result;
+      } catch (err) {
         setStatus("error");
-        const message = `Cloudinary upload failed with status ${response.status}`;
+        const message =
+          err instanceof Error && err.message === uploadPresetErrorMessage
+            ? uploadPresetErrorMessage
+            : err instanceof Error
+              ? err.message
+              : "Cloudinary upload failed.";
         setError(message);
         throw new Error(message);
       }
-
-      const payload: Record<string, unknown> = await response.json();
-      const secureUrl = typeof payload.secure_url === "string" ? payload.secure_url : null;
-      const publicId = typeof payload.public_id === "string" ? payload.public_id : undefined;
-      const bytes = typeof payload.bytes === "number" ? payload.bytes : file.size;
-      const resourceType =
-        typeof payload.resource_type === "string" ? payload.resource_type.toLowerCase() : "";
-      const accessMode =
-        typeof payload.access_mode === "string" ? payload.access_mode.toLowerCase() : "";
-
-      if (!secureUrl) {
-        setStatus("error");
-        const message = "Cloudinary response did not include a secure_url.";
-        setError(message);
-        throw new Error(message);
-      }
-
-      if (resourceType !== "raw" || accessMode !== "public") {
-        setStatus("error");
-        const message = "Cloudinary upload is not publicly accessible. Check preset configuration.";
-        setError(message);
-        console.error("cloudinary_upload_misconfigured", { resourceType, accessMode });
-        throw new Error(message);
-      }
-
-      setStatus("success");
-      const result: CloudinaryUploadResult = {
-        fileUrl: secureUrl,
-        bytes,
-        resourceType,
-        accessMode,
-      };
-
-      if (publicId) {
-        result.publicId = publicId;
-      }
-      if (typeof payload.format === "string") {
-        result.format = payload.format;
-      }
-
-      return result;
     },
     [cloudName, uploadPreset, configurationError, isConfigured],
   );
