@@ -3,75 +3,107 @@ import { POST } from "@/app/api/analyses/route";
 import { cvRepository, resetCvRepository } from "@/server/cv-repository";
 import { analysisRepository, resetAnalysisRepository } from "@/server/analysis-repository";
 import { resetRateLimit } from "@/server/rate-limit";
-import { resetGeminiState, setGeminiCache, GeminiQuotaError } from "@/server/analysis/gemini";
+import {
+  GeminiParseError,
+  GeminiQuotaError,
+  type GeminiFileAnalysis,
+} from "@/server/analysis/gemini";
 import type * as GeminiModule from "@/server/analysis/gemini";
 
 type GeminiModuleType = typeof GeminiModule;
 
+const USER_ID = "analysis-user";
+const OTHER_USER_ID = "other-user";
+
 const getAuthSessionMock = vi.fn();
 const analyzeWithGeminiMock = vi.fn();
+const extractTextFromBufferMock = vi.fn();
+
+const originalFetch = global.fetch;
 
 vi.mock("@/lib/auth/session", () => ({
   getAuthSession: () => getAuthSessionMock(),
 }));
 
 vi.mock("@/server/analysis/text-extractor", () => ({
-  extractTextFromFile: vi.fn(async (url: string, mime: string) => {
-    void url;
-    void mime;
-    return "javascript react node";
-  }),
+  extractTextFromBuffer: (...args: unknown[]) => extractTextFromBufferMock(...args),
+  extractTextFromFile: vi.fn(),
 }));
 
 vi.mock("@/server/analysis/gemini", async () => {
   const actual = await vi.importActual<GeminiModuleType>("@/server/analysis/gemini");
   return {
     ...actual,
-    analyzeWithGemini: (...args: unknown[]) => analyzeWithGeminiMock(...args),
+    analyzeWithGeminiFile: (...args: unknown[]) => analyzeWithGeminiMock(...args),
   };
 });
 
-const { extractTextFromFile } = await import("@/server/analysis/text-extractor");
+const sampleGeminiResult: GeminiFileAnalysis = {
+  atsScore: 83,
+  feedback: {
+    positive: ["Delivers high-impact front-end projects"],
+    improvements: ["Highlight cross-team collaboration"],
+  },
+  keywords: {
+    extracted: ["react", "typescript"],
+    missing: ["aws"],
+  },
+};
 
-const USER_ID = "analysis-user";
-const OTHER_USER_ID = "another";
+type ApiAnalysis = GeminiFileAnalysis & {
+  id: string;
+  cvId: string;
+  usedFallback: boolean;
+  fallbackReason: string | null;
+  createdAt: string;
+};
+
+type AnalysisResponseBody = { analysis: ApiAnalysis };
+
+const makeResponse = (buffer: ArrayBuffer, mime = "application/pdf"): Response =>
+  new Response(buffer, {
+    status: 200,
+    headers: { "content-type": mime },
+  });
+
+beforeEach(() => {
+  resetCvRepository();
+  resetAnalysisRepository();
+  resetRateLimit();
+  getAuthSessionMock.mockReset();
+  extractTextFromBufferMock.mockReset();
+  analyzeWithGeminiMock.mockReset();
+  getAuthSessionMock.mockResolvedValue({ user: { id: USER_ID } });
+  extractTextFromBufferMock.mockResolvedValue("javascript react node");
+  analyzeWithGeminiMock.mockResolvedValue(sampleGeminiResult);
+  process.env.GOOGLE_GEMINI_API_KEY = "test-key";
+  global.fetch = vi.fn(async () => {
+    const encoder = new TextEncoder();
+    return makeResponse(encoder.encode("%PDF resume").buffer);
+  }) as unknown as typeof fetch;
+});
+
+afterEach(() => {
+  vi.clearAllMocks();
+  global.fetch = originalFetch;
+  delete process.env.GOOGLE_GEMINI_API_KEY;
+});
+
+const createRequest = (payload: unknown) =>
+  new Request("http://localhost/api/analyses", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  });
 
 describe("POST /api/analyses", () => {
-  beforeEach(() => {
-    resetCvRepository();
-    resetAnalysisRepository();
-    resetRateLimit();
-    resetGeminiState();
-    getAuthSessionMock.mockReset();
-    getAuthSessionMock.mockResolvedValue({ user: { id: USER_ID } });
-    analyzeWithGeminiMock.mockReset();
-    analyzeWithGeminiMock.mockResolvedValue({
-      summary: "Seasoned engineer with strong JavaScript focus.",
-      strengths: ["Strong JavaScript background"],
-      weaknesses: ["Limited backend leadership"],
-      overallScore: 82,
-    });
-    process.env.GOOGLE_GEMINI_API_KEY = "test-key";
-  });
-
-  afterEach(() => {
-    vi.clearAllMocks();
-    delete process.env.GOOGLE_GEMINI_API_KEY;
-  });
-
-  it("returns 401 when user is not authenticated", async () => {
+  it("returns 401 when the user is not authenticated", async () => {
     getAuthSessionMock.mockResolvedValue(null);
-    const request = new Request("http://localhost/api/analyses", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ cvId: "missing" }),
-    });
-
-    const response = await POST(request);
+    const response = await POST(createRequest({ cvId: "missing" }));
     expect(response.status).toBe(401);
   });
 
-  it("returns 404 when CV belongs to another user", async () => {
+  it("returns 404 when the CV belongs to another user", async () => {
     getAuthSessionMock.mockResolvedValue({ user: { id: OTHER_USER_ID } });
     const cv = await cvRepository.createForUser(USER_ID, {
       fileName: "sample.pdf",
@@ -81,58 +113,42 @@ describe("POST /api/analyses", () => {
       publicId: null,
     });
 
-    const request = new Request("http://localhost/api/analyses", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ cvId: cv.id }),
-    });
-
-    const response = await POST(request);
+    const response = await POST(createRequest({ cvId: cv.id }));
     expect(response.status).toBe(404);
   });
 
-  it("creates AI-powered analysis when Gemini is configured", async () => {
+  it("creates a Gemini-backed analysis and persists history", async () => {
     const cv = await cvRepository.createForUser(USER_ID, {
       fileName: "sample.pdf",
       fileUrl: "https://example.com/sample.pdf",
-      fileSize: 1024,
+      fileSize: 2048,
       mimeType: "application/pdf",
       publicId: null,
     });
 
-    const request = new Request("http://localhost/api/analyses", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ cvId: cv.id }),
-    });
-
-    const response = await POST(request);
+    const response = await POST(createRequest({ cvId: cv.id }));
     expect(response.status).toBe(201);
-    const payload = (await response.json()) as {
-      analysis: {
-        summary: string | null;
-        strengths: string[];
-        weaknesses: string[];
-        score: number;
-        usedFallback?: boolean;
-        fallbackReason?: string | null;
-      };
-    };
-    expect(payload.analysis.summary ?? "").toContain("engineer");
-    expect(payload.analysis.strengths).toContain("Strong JavaScript background");
-    expect(payload.analysis.weaknesses).toContain("Limited backend leadership");
-    expect(payload.analysis.score).toBe(82);
-    expect(payload.analysis.usedFallback).toBeFalsy();
-    expect(extractTextFromFile).toHaveBeenCalled();
+    const payload = (await response.json()) as AnalysisResponseBody;
+
+    expect(payload.analysis.atsScore).toBe(sampleGeminiResult.atsScore);
+    expect(payload.analysis.feedback.positive).toContain("Delivers high-impact front-end projects");
+    expect(payload.analysis.usedFallback).toBe(false);
+    expect(payload.analysis.fallbackReason).toBeNull();
+
+    const stored = await analysisRepository.findLatestForCv(cv.id, USER_ID);
+    expect(stored?.atsScore).toBe(sampleGeminiResult.atsScore);
+    expect(stored?.usedFallback).toBe(false);
+
+    const updatedCv = await cvRepository.findById(cv.id);
+    expect(updatedCv?.atsScore).toBe(sampleGeminiResult.atsScore);
+    expect(updatedCv?.analyzedAt).toBeTruthy();
+
     expect(analyzeWithGeminiMock).toHaveBeenCalled();
-
-    const stored = await analysisRepository.listByCvId(cv.id);
-    expect(stored).toHaveLength(1);
-    expect(stored[0]?.summary ?? "").toContain("engineer");
+    expect(global.fetch).toHaveBeenCalledWith(cv.fileUrl);
   });
 
-  it("uses cached Gemini analysis when available", async () => {
-    const modelId = process.env.GEMINI_MODEL ?? "gemini-2.5-flash";
+  it("falls back to keyword scoring when Gemini quota errors", async () => {
+    analyzeWithGeminiMock.mockRejectedValueOnce(new GeminiQuotaError("Quota exceeded"));
     const cv = await cvRepository.createForUser(USER_ID, {
       fileName: "sample.pdf",
       fileUrl: "https://example.com/sample.pdf",
@@ -141,68 +157,73 @@ describe("POST /api/analyses", () => {
       publicId: null,
     });
 
-    setGeminiCache(cv.id, ["javascript", "react", "node", "typescript", "nextjs"], modelId, {
-      summary: "Cached insight",
-      strengths: ["Cached strength"],
-      weaknesses: ["Cached weakness"],
-      overallScore: 90,
-    });
-
-    const request = new Request("http://localhost/api/analyses", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ cvId: cv.id }),
-    });
-
-    const response = await POST(request);
+    const response = await POST(createRequest({ cvId: cv.id }));
     expect(response.status).toBe(201);
-    const payload = (await response.json()) as {
-      analysis: { summary: string | null; strengths: string[]; weaknesses: string[]; score: number };
-    };
-    expect(payload.analysis.summary).toBe("Cached insight");
-    expect(payload.analysis.strengths).toContain("Cached strength");
-    expect(payload.analysis.score).toBe(90);
-    expect(analyzeWithGeminiMock).not.toHaveBeenCalled();
-  });
+    const payload = (await response.json()) as AnalysisResponseBody;
 
-  it("falls back to keyword scoring when Gemini errors", async () => {
-    analyzeWithGeminiMock.mockRejectedValueOnce(new GeminiQuotaError("QUOTA", "quota exceeded"));
-
-    const cv = await cvRepository.createForUser(USER_ID, {
-      fileName: "sample.pdf",
-      fileUrl: "https://example.com/sample.pdf",
-      fileSize: 1024,
-      mimeType: "application/pdf",
-      publicId: null,
-    });
-
-    const request = new Request("http://localhost/api/analyses", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ cvId: cv.id }),
-    });
-
-    const response = await POST(request);
-    expect(response.status).toBe(201);
-    const payload = (await response.json()) as {
-      analysis: {
-        summary: string | null;
-        strengths: string[];
-        message?: string | null;
-        usedFallback?: boolean;
-        fallbackReason?: string | null;
-      };
-    };
-    expect(payload.analysis.summary).toBeNull();
-    expect(payload.analysis.strengths).toContain("javascript");
-    expect(payload.analysis.message ?? "").toContain("quota");
     expect(payload.analysis.usedFallback).toBe(true);
     expect(payload.analysis.fallbackReason).toBe("QUOTA");
+    expect(payload.analysis.keywords.extracted).toContain("javascript");
+    expect(payload.analysis.keywords.missing).toContain("typescript");
+    expect(extractTextFromBufferMock).toHaveBeenCalled();
+  });
+
+  it("falls back with PARSE reason when Gemini returns malformed JSON", async () => {
+    analyzeWithGeminiMock.mockRejectedValueOnce(new GeminiParseError("invalid json"));
+    const cv = await cvRepository.createForUser(USER_ID, {
+      fileName: "sample.pdf",
+      fileUrl: "https://example.com/sample.pdf",
+      fileSize: 1024,
+      mimeType: "application/pdf",
+      publicId: null,
+    });
+
+    const response = await POST(createRequest({ cvId: cv.id }));
+    expect(response.status).toBe(201);
+    const payload = (await response.json()) as AnalysisResponseBody;
+
+    expect(payload.analysis.usedFallback).toBe(true);
+    expect(payload.analysis.fallbackReason).toBe("PARSE");
+  });
+
+  it("falls back with EMPTY reason when Gemini returns empty content", async () => {
+    analyzeWithGeminiMock.mockRejectedValueOnce(new GeminiParseError("EMPTY_OR_NON_JSON"));
+    const cv = await cvRepository.createForUser(USER_ID, {
+      fileName: "sample.pdf",
+      fileUrl: "https://example.com/sample.pdf",
+      fileSize: 1024,
+      mimeType: "application/pdf",
+      publicId: null,
+    });
+
+    const response = await POST(createRequest({ cvId: cv.id }));
+    expect(response.status).toBe(201);
+    const payload = (await response.json()) as AnalysisResponseBody;
+
+    expect(payload.analysis.usedFallback).toBe(true);
+    expect(payload.analysis.fallbackReason).toBe("EMPTY");
+  });
+
+  it("falls back with SAFETY reason when Gemini rejects safety settings", async () => {
+    analyzeWithGeminiMock.mockRejectedValueOnce(new GeminiParseError("SAFETY_REJECTION"));
+    const cv = await cvRepository.createForUser(USER_ID, {
+      fileName: "sample.pdf",
+      fileUrl: "https://example.com/sample.pdf",
+      fileSize: 1024,
+      mimeType: "application/pdf",
+      publicId: null,
+    });
+
+    const response = await POST(createRequest({ cvId: cv.id }));
+    expect(response.status).toBe(201);
+    const payload = (await response.json()) as AnalysisResponseBody;
+
+    expect(payload.analysis.usedFallback).toBe(true);
+    expect(payload.analysis.fallbackReason).toBe("SAFETY");
   });
 
   it("uses fallback when Gemini API key is missing", async () => {
     delete process.env.GOOGLE_GEMINI_API_KEY;
-
     const cv = await cvRepository.createForUser(USER_ID, {
       fileName: "sample.pdf",
       fileUrl: "https://example.com/sample.pdf",
@@ -211,48 +232,30 @@ describe("POST /api/analyses", () => {
       publicId: null,
     });
 
-    const request = new Request("http://localhost/api/analyses", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ cvId: cv.id }),
-    });
-
-    const response = await POST(request);
+    const response = await POST(createRequest({ cvId: cv.id }));
     expect(response.status).toBe(201);
-    const payload = (await response.json()) as {
-      analysis: { strengths: string[]; weaknesses: string[]; usedFallback?: boolean };
-    };
-    expect(payload.analysis.strengths).toContain("javascript");
-    expect(payload.analysis.weaknesses.length).toBeGreaterThanOrEqual(0);
+    const payload = (await response.json()) as AnalysisResponseBody;
+
+    expect(payload.analysis.usedFallback).toBe(true);
+    expect(payload.analysis.fallbackReason).toBe("PARSE");
     expect(analyzeWithGeminiMock).not.toHaveBeenCalled();
-    expect(payload.analysis.usedFallback).toBeFalsy();
   });
 
-  it("returns message when extracted text is empty", async () => {
-    vi.mocked(extractTextFromFile).mockResolvedValueOnce(" ");
+  it("returns 413 when file exceeds configured limit", async () => {
+    const largeArray = new Uint8Array(ANALYSIS_MAX_FILE_MB * 1024 * 1024 + 1);
+    global.fetch = vi.fn(async () => makeResponse(largeArray.buffer)) as unknown as typeof fetch;
 
     const cv = await cvRepository.createForUser(USER_ID, {
-      fileName: "sample.docx",
-      fileUrl: "https://example.com/sample.docx",
-      fileSize: 1024,
-      mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      fileName: "oversize.pdf",
+      fileUrl: "https://example.com/oversize.pdf",
+      fileSize: largeArray.length,
+      mimeType: "application/pdf",
       publicId: null,
     });
 
-    const request = new Request("http://localhost/api/analyses", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ cvId: cv.id }),
-    });
-
-    const response = await POST(request);
-    expect(response.status).toBe(201);
-    const payload = (await response.json()) as {
-      analysis: { score: number; message?: string | null; weaknesses: string[]; usedFallback?: boolean };
-    };
-    expect(payload.analysis.score).toBe(0);
-    expect(payload.analysis.message).toBeTruthy();
-    expect(payload.analysis.weaknesses.length).toBeGreaterThan(0);
-    expect(payload.analysis.usedFallback).toBeFalsy();
+    const response = await POST(createRequest({ cvId: cv.id }));
+    expect(response.status).toBe(413);
   });
 });
+
+const ANALYSIS_MAX_FILE_MB = Number.parseInt(process.env.ANALYSIS_MAX_FILE_MB ?? "10", 10) || 10;

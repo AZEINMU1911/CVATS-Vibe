@@ -1,163 +1,244 @@
-import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
-import type { GenerativeModel } from "@google/generative-ai";
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import {
-  analyzeWithGemini,
+  analyzeWithGeminiFile,
+  GeminiParseError,
   GeminiQuotaError,
-  getGeminiCache,
-  setGeminiCache,
-  resetGeminiState,
+  parseGeminiJson,
+  type GeminiFileAnalysis,
 } from "@/server/analysis/gemini";
 
-const summaryResponses: string[] = [];
-const analysisResponses: string[] = [];
-let lastAnalysisPrompt: string | null = null;
+let generateContentMock: Mock;
+let uploadFileMock: Mock;
+let getFileMock: Mock;
+let deleteFileMock: Mock;
 
-const summaryModel: GenerativeModel = {
-  generateContent: vi.fn(async () => ({
-    response: { text: () => summaryResponses.shift() ?? "" },
-  })),
-} as unknown as GenerativeModel;
+vi.mock("@google/generative-ai", () => {
+  const mocks = {
+    generateContent: vi.fn(),
+    uploadFile: vi.fn(),
+    getFile: vi.fn(),
+    deleteFile: vi.fn(),
+  };
 
-const analysisModel: GenerativeModel = {
-  generateContent: vi.fn(async ({ contents }) => {
-    const part = contents?.[0]?.parts?.[0];
-    lastAnalysisPrompt = typeof part?.text === "string" ? part.text : null;
-    return { response: { text: () => analysisResponses.shift() ?? "" } };
-  }),
-} as unknown as GenerativeModel;
+  (globalThis as typeof globalThis & { __geminiMocks?: typeof mocks }).__geminiMocks = mocks;
 
-const getGenerativeModelMock = vi.fn((options?: { systemInstruction?: string }) => {
-  return options?.systemInstruction ? analysisModel : summaryModel;
-});
-
-vi.mock("@google/generative-ai", () => ({
-  GoogleGenerativeAI: class {
+  class GoogleGenerativeAI {
     constructor(apiKey: string) {
       if (!apiKey) {
         throw new Error("missing key");
       }
     }
 
-    getGenerativeModel = getGenerativeModelMock;
-  },
-}));
+    getGenerativeModel() {
+      return { generateContent: mocks.generateContent };
+    }
+  }
 
-describe("analyzeWithGemini", () => {
-  beforeEach(() => {
-    summaryResponses.length = 0;
-    analysisResponses.length = 0;
-    lastAnalysisPrompt = null;
-    (summaryModel.generateContent as unknown as Mock).mockReset();
-    (analysisModel.generateContent as unknown as Mock).mockReset();
-    (summaryModel.generateContent as unknown as Mock).mockImplementation(async () => ({
-      response: { text: () => summaryResponses.shift() ?? "" },
-    }));
-    (analysisModel.generateContent as unknown as Mock).mockImplementation(async ({ contents }) => {
-      const part = contents?.[0]?.parts?.[0];
-      lastAnalysisPrompt = typeof part?.text === "string" ? part.text : null;
-      return { response: { text: () => analysisResponses.shift() ?? "" } };
-    });
-    getGenerativeModelMock.mockClear();
-    process.env.GOOGLE_GEMINI_API_KEY = "test";
-    resetGeminiState();
-  });
-
-  it("parses valid JSON response", async () => {
-    analysisResponses.push(
-      JSON.stringify({
-        summary: "Concise summary",
-        strengths: ["Strength"],
-        weaknesses: ["Weakness"],
-        overallScore: 88,
-      }),
-    );
-
-    const result = await analyzeWithGemini("Seasoned engineer with Java experience.");
-    expect(result.summary).toBe("Concise summary");
-    expect(result.strengths).toContain("Strength");
-    expect(result.weaknesses).toContain("Weakness");
-    expect(result.overallScore).toBe(88);
-    expect(getGenerativeModelMock).toHaveBeenCalledTimes(2);
-  });
-
-  it("retries once when response is not JSON", async () => {
-    analysisResponses.push(
-      "Not JSON",
-      JSON.stringify({ summary: "Fallback", strengths: [], weaknesses: [], overallScore: 70 }),
-    );
-
-    const result = await analyzeWithGemini("Full stack engineer");
-    expect(result.summary).toBe("Fallback");
-    expect(analysisModel.generateContent).toHaveBeenCalledTimes(2);
-  });
-
-  it("sanitizes PII before sending to Gemini", async () => {
-    analysisResponses.push(JSON.stringify({ summary: "", strengths: [], weaknesses: [], overallScore: 0 }));
-
-    await analyzeWithGemini("Email john.doe@example.com phone +1 555 555 5555");
-    expect(lastAnalysisPrompt).toBeTruthy();
-    expect(lastAnalysisPrompt).not.toContain("john.doe@example.com");
-    expect(lastAnalysisPrompt).not.toContain("555 555 5555");
-  });
-
-  it("returns defaults when text is empty", async () => {
-    const result = await analyzeWithGemini("   ");
-    expect(result.summary).toBe("");
-    expect(result.overallScore).toBe(0);
-    expect(result.strengths).toHaveLength(0);
-  });
-
-  it("throws GeminiQuotaError after max retries", async () => {
-    vi.useFakeTimers();
-    (analysisModel.generateContent as unknown as Mock).mockImplementation(async () => {
-      const error = new Error("429") as Error & { status?: number };
-      error.status = 429;
-      throw error;
-    });
-
-    const promise = analyzeWithGemini("SRE");
-    const handled = promise.catch((error) => error);
-    await vi.runAllTimersAsync();
-    const error = await handled;
-    expect(error).toBeInstanceOf(GeminiQuotaError);
-    vi.useRealTimers();
-  });
-
-  it("honours RetryInfo delays", async () => {
-    vi.useFakeTimers();
-    let callCount = 0;
-    (analysisModel.generateContent as unknown as Mock).mockImplementation(async () => {
-      callCount += 1;
-      if (callCount === 1) {
-        const error = new Error("429") as Error & { status?: number; errorDetails?: unknown };
-        error.status = 429;
-        error.errorDetails = [
-          {
-            "@type": "type.googleapis.com/google.rpc.RetryInfo",
-            retryDelay: "5s",
-          },
-        ];
-        throw error;
+  class GoogleAIFileManager {
+    constructor(apiKey: string) {
+      if (!apiKey) {
+        throw new Error("missing key");
       }
-      return { response: { text: () => JSON.stringify({ summary: "Retry", strengths: [], weaknesses: [], overallScore: 60 }) } };
-    });
+    }
 
-    const promise = analyzeWithGemini("Backend engineer");
-    await vi.advanceTimersByTimeAsync(5000);
-    const result = await promise;
-    expect(result.overallScore).toBe(60);
-    expect(callCount).toBe(2);
-    vi.useRealTimers();
+    uploadFile = mocks.uploadFile;
+    getFile = mocks.getFile;
+    deleteFile = mocks.deleteFile;
+  }
+
+  const HarmCategory = {
+    HARM_CATEGORY_UNSPECIFIED: "HARM_CATEGORY_UNSPECIFIED",
+    HARM_CATEGORY_HATE_SPEECH: "HARM_CATEGORY_HATE_SPEECH",
+    HARM_CATEGORY_SEXUALLY_EXPLICIT: "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+    HARM_CATEGORY_HARASSMENT: "HARM_CATEGORY_HARASSMENT",
+    HARM_CATEGORY_DANGEROUS_CONTENT: "HARM_CATEGORY_DANGEROUS_CONTENT",
+    HARM_CATEGORY_CIVIC_INTEGRITY: "HARM_CATEGORY_CIVIC_INTEGRITY",
+  } as const;
+
+  const HarmBlockThreshold = {
+    BLOCK_NONE: "BLOCK_NONE",
+  } as const;
+
+  return {
+    GoogleGenerativeAI,
+    GoogleAIFileManager,
+    HarmCategory,
+    HarmBlockThreshold,
+  };
+});
+
+vi.mock("@google/generative-ai/server", () => {
+  const existing = (globalThis as typeof globalThis & { __geminiMocks?: { generateContent: Mock; uploadFile: Mock; getFile: Mock; deleteFile: Mock } }).__geminiMocks;
+  const mocks =
+    existing ?? {
+      generateContent: vi.fn(),
+      uploadFile: vi.fn(),
+      getFile: vi.fn(),
+      deleteFile: vi.fn(),
+    };
+  (globalThis as typeof globalThis & { __geminiMocks?: typeof mocks }).__geminiMocks = mocks;
+
+  class GoogleAIFileManager {
+    constructor(apiKey: string) {
+      if (!apiKey) {
+        throw new Error("missing key");
+      }
+    }
+
+    uploadFile = mocks.uploadFile;
+    getFile = mocks.getFile;
+    deleteFile = mocks.deleteFile;
+  }
+
+  return { GoogleAIFileManager };
+});
+
+const sampleAnalysis: GeminiFileAnalysis = {
+  atsScore: 78,
+  feedback: {
+    positive: ["Clear React experience"],
+    improvements: ["Expand on backend ownership"],
+  },
+  keywords: {
+    extracted: ["react", "typescript"],
+    missing: ["aws"],
+  },
+};
+
+const candidateResponse = (text: string, finishReason = "STOP") => ({
+  response: {
+    candidates: [
+      {
+        finishReason,
+        content: {
+          parts: text ? [{ text }] : [],
+        },
+      },
+    ],
+  },
+});
+
+beforeEach(() => {
+  const geminiMocks = (globalThis as typeof globalThis & { __geminiMocks?: { generateContent: Mock; uploadFile: Mock; getFile: Mock; deleteFile: Mock } }).__geminiMocks;
+  if (!geminiMocks) {
+    throw new Error("Gemini mocks not initialised");
+  }
+  generateContentMock = geminiMocks.generateContent;
+  uploadFileMock = geminiMocks.uploadFile;
+  getFileMock = geminiMocks.getFile;
+  deleteFileMock = geminiMocks.deleteFile;
+
+  generateContentMock.mockReset();
+  uploadFileMock.mockReset();
+  getFileMock.mockReset();
+  deleteFileMock.mockReset();
+
+  process.env.GOOGLE_GEMINI_API_KEY = "test-key";
+  uploadFileMock.mockResolvedValue({
+    file: {
+      name: "files/test",
+      uri: "files/test",
+      state: "ACTIVE",
+    },
+  });
+  getFileMock.mockResolvedValue({
+    name: "files/test",
+    uri: "files/test",
+    state: "ACTIVE",
+  });
+  deleteFileMock.mockResolvedValue(undefined);
+});
+
+afterEach(() => {
+  vi.clearAllMocks();
+  delete process.env.GOOGLE_GEMINI_API_KEY;
+});
+
+describe("parseGeminiJson", () => {
+  it("parses raw JSON payload", () => {
+    const payload = JSON.stringify(sampleAnalysis);
+    expect(parseGeminiJson(payload)).toEqual(sampleAnalysis);
   });
 
-  it("serves cached entries without touching the SDK", () => {
-    setGeminiCache("cv-1", ["js"], "gemini-2.5-flash", {
-      summary: "Cached",
-      strengths: ["Summary"],
-      weaknesses: [],
-      overallScore: 75,
+  it("parses fenced JSON payload", () => {
+    const payload = `\`\`\`json\n${JSON.stringify(sampleAnalysis)}\n\`\`\``;
+    expect(parseGeminiJson(payload)).toEqual(sampleAnalysis);
+  });
+
+  it("parses JSON when wrapped inside prose and fences", () => {
+    const payload = `Here you go:\n\`\`\`\n${JSON.stringify(sampleAnalysis)}\n\`\`\`\nThanks!`;
+    expect(parseGeminiJson(payload)).toEqual(sampleAnalysis);
+  });
+
+  it("throws GeminiParseError for invalid JSON", () => {
+    expect(() => parseGeminiJson("not json")).toThrow(GeminiParseError);
+  });
+});
+
+describe("analyzeWithGeminiFile", () => {
+  it("returns parsed analysis for a successful inline response", async () => {
+    generateContentMock.mockResolvedValueOnce(candidateResponse(JSON.stringify(sampleAnalysis)));
+
+    const result = await analyzeWithGeminiFile({ file: Buffer.from("resume"), mime: "application/pdf" });
+
+    expect(result).toEqual(sampleAnalysis);
+    expect(generateContentMock).toHaveBeenCalledTimes(1);
+    expect(uploadFileMock).not.toHaveBeenCalled();
+  });
+
+  it("falls back to file upload when inline response is empty", async () => {
+    generateContentMock
+      .mockResolvedValueOnce(candidateResponse(""))
+      .mockResolvedValueOnce(candidateResponse(JSON.stringify(sampleAnalysis)));
+
+    const result = await analyzeWithGeminiFile({ file: Buffer.from("resume"), mime: "application/pdf" });
+
+    expect(result).toEqual(sampleAnalysis);
+    expect(uploadFileMock).toHaveBeenCalledTimes(1);
+    expect(deleteFileMock).toHaveBeenCalledWith("files/test");
+    expect(generateContentMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("falls back with safety reason when the model rejects safety settings", async () => {
+    const error = Object.assign(new Error("Safety settings invalid"), { status: 400 });
+    generateContentMock.mockRejectedValueOnce(error);
+
+    await expect(
+      analyzeWithGeminiFile({ file: Buffer.from("resume"), mime: "application/pdf" }),
+    ).rejects.toBeInstanceOf(GeminiParseError);
+  });
+
+  it("throws GeminiParseError when both attempts are empty", async () => {
+    generateContentMock.mockResolvedValue(candidateResponse(""));
+
+    await expect(
+      analyzeWithGeminiFile({ file: Buffer.from("resume"), mime: "application/pdf" }),
+    ).rejects.toHaveProperty("message", "EMPTY_OR_NON_JSON");
+    expect(uploadFileMock).toHaveBeenCalled();
+  });
+
+  it("propagates quota errors with capped retry info", async () => {
+    const quotaError = Object.assign(new Error("429"), {
+      status: 429,
+      errorDetails: [
+        {
+          "@type": "type.googleapis.com/google.rpc.RetryInfo",
+          retryDelay: "9s",
+        },
+      ],
     });
-    const cached = getGeminiCache("cv-1", ["js"], "gemini-2.5-flash");
-    expect(cached?.summary).toBe("Cached");
+    generateContentMock.mockRejectedValueOnce(quotaError);
+
+    const promise = analyzeWithGeminiFile({ file: Buffer.from("resume"), mime: "application/pdf" });
+    await expect(promise).rejects.toBeInstanceOf(GeminiQuotaError);
+  });
+
+  it("parses fenced JSON returned from the file upload attempt", async () => {
+    generateContentMock
+      .mockResolvedValueOnce(candidateResponse(""))
+      .mockResolvedValueOnce(candidateResponse(`\`\`\`json\n${JSON.stringify(sampleAnalysis)}\n\`\`\``));
+
+    const result = await analyzeWithGeminiFile({ file: Buffer.from("resume"), mime: "application/pdf" });
+    expect(result).toEqual(sampleAnalysis);
   });
 });

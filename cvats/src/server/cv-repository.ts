@@ -11,6 +11,8 @@ export interface CvRecord {
   mimeType: string;
   uploadedAt: string;
   publicId?: string | null;
+  atsScore?: number | null;
+  analyzedAt?: string | null;
 }
 
 export interface CreateCvInput {
@@ -27,6 +29,7 @@ export interface CvRepository {
   findById(id: string): Promise<CvRecord | null>;
   deleteById(id: string, userId: string): Promise<boolean>;
   listPage(userId: string, limit: number, cursor?: string): Promise<{ items: CvRecord[]; nextCursor?: string | null }>;
+  updateAnalysisMeta(cvId: string, input: { atsScore: number; analyzedAt: Date }): Promise<void>;
   reset?: () => void;
 }
 
@@ -42,6 +45,8 @@ const mapCv = (record: CV): CvRecord => ({
   mimeType: record.mimeType,
   uploadedAt: record.uploadedAt.toISOString(),
   publicId: record.publicId,
+  atsScore: record.atsScore ?? null,
+  analyzedAt: record.analyzedAt ? record.analyzedAt.toISOString() : null,
 });
 
 const createPrismaRepository = (): CvRepository => {
@@ -100,6 +105,15 @@ const createPrismaRepository = (): CvRepository => {
       const nextCursor = nextItem?.id ?? null;
       return { items, nextCursor };
     },
+    async updateAnalysisMeta(cvId, input) {
+      await prisma.cV.update({
+        where: { id: cvId },
+        data: {
+          atsScore: input.atsScore,
+          analyzedAt: input.analyzedAt,
+        },
+      });
+    },
   };
 };
 
@@ -157,6 +171,20 @@ const createMemoryRepository = (): CvRepository => {
         items: page,
         nextCursor: nextItem?.id ?? null,
       };
+    },
+    async updateAnalysisMeta(cvId, input) {
+      for (const [userId, items] of itemsByUser.entries()) {
+        const index = items.findIndex((item) => item.id === cvId);
+        if (index === -1) continue;
+        const record = items[index];
+        if (!record) {
+          continue;
+        }
+        record.atsScore = input.atsScore;
+        record.analyzedAt = input.analyzedAt.toISOString();
+        itemsByUser.set(userId, items);
+        break;
+      }
     },
     reset() {
       itemsByUser.clear();

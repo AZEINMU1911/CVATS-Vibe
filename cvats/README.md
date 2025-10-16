@@ -16,7 +16,7 @@ Visit `http://localhost:3000` for the marketing site and `http://localhost:3000/
 - Marketing landing page that mirrors the dashboard visual theme and describes the CVATS value prop.
 - Authentication with email/password (Auth.js credentials provider) plus registration and sign-out flows.
 - Dashboard with direct-to-Cloudinary uploads, inline status banners, and per-CV metadata cards.
-- Deterministic keyword scoring for uploaded resumes with inline results and SweetAlert feedback.
+- ATS-style resume analysis powered by Gemini inlineData JSON (ATS score, feedback, keyword diff) with deterministic keyword fallback and SweetAlert feedback.
 - Cursor-based pagination and confirmable deletion for CVs, with all data scoped to the signed-in user.
 - Automated tooling: ESLint, TypeScript strict mode, Vitest unit/API tests, Playwright e2e coverage.
 
@@ -48,9 +48,9 @@ NEXTAUTH_SECRET=replace-with-strong-secret
 GOOGLE_GEMINI_API_KEY=""
 GEMINI_MODEL=gemini-2.5-flash
 GEMINI_MAX_TOKENS=1024
-GEMINI_MAX_RETRIES=3
-GEMINI_COOLDOWN_SECONDS=60
-GEMINI_CACHE_TTL_SECONDS=3600
+GEMINI_MAX_RETRIES=2
+GEMINI_MAX_BACKOFF_MS=4000
+ANALYSIS_MAX_FILE_MB=10
 ```
 
 ### Testing Notes
@@ -59,11 +59,11 @@ Vitest covers utility and API logic (including upload validation and persistence
 
 ### CV Analysis
 
-- `/api/analyses` extracts text from the stored file (PDF via a lightweight parser, DOCX currently returns an empty string until a lightweight extractor is added) and, when configured, sends a redacted version to Google Gemini for strengths, weaknesses, and overall fit scoring.
-- If `GOOGLE_GEMINI_API_KEY` is not supplied, the route falls back to deterministic keyword scoring so local development and offline modes still behave predictably.
-- Requests are rate limited (10 analyses per minute, per user) and oversized resumes are summarized in chunks before reaching Gemini to stay within token limits.
-- The dashboard renders an **Analyze** button per CV. Results surface inline with the AI summary plus strengths/weaknesses, alongside any keyword matches or warnings.
-- When Gemini is unavailable (quota/cooldown), the API falls back to keyword scoring and returns `usedFallback` metadata so the UI can explain the graceful degradation.
+- `POST /api/analyses` downloads the Cloudinary file bytes, enforces the `ANALYSIS_MAX_FILE_MB` size cap, and first submits the binary directly to Gemini via `inlineData`, prompting an ATS-style reviewer persona. If that finish reason is anything but `STOP` or the candidate comes back empty we retry once via the Gemini File API. Every request forces `application/json` with `temperature: 0.2` and validates against a strict schema.
+- The returned payload must match `{ "atsScore": number, "feedback": { "positive": string[], "improvements": string[] }, "keywords": { "extracted": string[], "missing": string[] } }`. A tolerant parser removes accidental ```json fences and validates with Zod before continuing.
+- Each run stores a record in `AnalysisHistory` (scoped by CV/user) and updates the parent CV with the latest `atsScore` and `analyzedAt` timestamp. `GET /api/analyses?cvId=...` returns the newest history entry for the signed-in user.
+- When Gemini returns a quota error, non-JSON, or empty content (after both attempts) — or when no API key is configured — the API falls back to deterministic keyword scoring using the downloaded bytes and tags the record with `usedFallback` plus a `QUOTA`, `PARSE`, or `EMPTY` reason.
+- The dashboard renders an ATS score badge, positive/improvement bullet lists, and extracted/missing keyword chips for every run. Fallback runs display a banner so teams know the result came from the deterministic path. Requests remain rate limited at 10 analyses per minute per user.
 
 ### CV Management
 
@@ -78,7 +78,7 @@ Vitest covers utility and API logic (including upload validation and persistence
 1. Users register and log in with email/password; Auth.js issues an encrypted session cookie (JWT strategy).
 2. The dashboard sends files directly from the browser to Cloudinary using the unsigned preset.
 3. Once Cloudinary responds, the client calls `POST /api/uploads` with the returned URL and metadata; the API validates the payload, associates it with the active session user, and stores it via Prisma (or memory in dev/tests).
-4. Triggering **Analyze** calls `POST /api/analyses`. The API fetches the stored CV, extracts text (lightweight PDF parser, DOCX stub), scores keywords deterministically, and persists the result alongside any extraction messages.
+4. Triggering **Analyze** calls `POST /api/analyses`. The API fetches the stored CV, sends it to Gemini (inline first, file upload second if needed), validates the strict JSON response, and then persists the result with fallback metadata. If both AI attempts fail we score locally and label the run with `fallbackReason: "EMPTY"`.
 5. Users can request `GET /api/uploads`/`GET /api/analyses` to fetch their own assets; pagination keeps responses trim.
 
 ### Limitations & TODOs

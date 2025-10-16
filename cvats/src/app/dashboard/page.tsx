@@ -18,6 +18,8 @@ interface CvSummary {
   mimeType: string;
   uploadedAt: string;
   publicId?: string | null;
+  atsScore?: number | null;
+  analyzedAt?: string | null;
 }
 
 type FetchState = "idle" | "loading" | "error";
@@ -339,6 +341,16 @@ const CvCard = ({ cv, onDelete }: { cv: CvSummary; onDelete: (id: string) => Pro
         <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1 font-medium text-slate-600 dark:bg-slate-800/80 dark:text-slate-200">
           {formatBytes(cv.fileSize)}
         </span>
+        {typeof cv.atsScore === "number" ? (
+          <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1 font-medium text-slate-600 dark:bg-slate-800/80 dark:text-slate-200">
+            Last ATS: {cv.atsScore}
+          </span>
+        ) : null}
+        {cv.analyzedAt ? (
+          <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1 font-medium text-slate-600 dark:bg-slate-800/80 dark:text-slate-200">
+            Analyzed {formatTimestamp(cv.analyzedAt)}
+          </span>
+        ) : null}
         {cv.publicId ? (
           <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1 font-medium text-slate-600 dark:bg-slate-800/80 dark:text-slate-200">
             Cloudinary ID: {cv.publicId}
@@ -383,75 +395,114 @@ const CvCard = ({ cv, onDelete }: { cv: CvSummary; onDelete: (id: string) => Pro
         </div>
       ) : null}
       {analyses.length > 0 ? (
-        <div className="mt-4 space-y-3">
-          {analyses.map((analysis) => (
-            <div
-              key={analysis.id}
-              className="rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3 text-xs text-blue-900 dark:border-blue-400/40 dark:bg-blue-500/10 dark:text-blue-200"
-            >
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="font-semibold">Score: {analysis.score ?? 0}</span>
-                <span>{new Date(analysis.createdAt).toLocaleTimeString()}</span>
-              </div>
-              {analysis.usedFallback ? (
-                <span className="mt-2 inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:bg-amber-500/20 dark:text-amber-200">
-                  Basic analysis ({analysis.fallbackReason ?? "fallback"})
-                </span>
-              ) : null}
-              {analysis.summary ? (
-                <p className="mt-2 text-[11px] leading-relaxed text-blue-800 dark:text-blue-200/80">
-                  {analysis.summary}
-                </p>
-              ) : null}
-              <div className="mt-3 grid gap-3 text-[11px] text-blue-800 dark:text-blue-200/80 sm:grid-cols-2">
-                <div>
-                  <p className="font-semibold uppercase tracking-wide text-[10px] text-blue-700 dark:text-blue-200">
-                    Strengths
+        <div className="mt-4 space-y-4">
+          {analyses.map((analysis) => {
+            let fallbackMessage: string | null = null;
+            if (analysis.usedFallback) {
+              if (analysis.fallbackReason === "QUOTA") {
+                fallbackMessage = "AI quota issue — showing basic analysis.";
+              } else if (analysis.fallbackReason === "EMPTY") {
+                fallbackMessage = "AI returned an empty result — showing basic analysis.";
+              } else {
+                fallbackMessage = "AI format issue — showing basic analysis.";
+              }
+            }
+            return (
+              <div
+                key={analysis.id}
+                className="rounded-2xl border border-blue-100 bg-blue-50 px-5 py-4 text-xs text-blue-900 dark:border-blue-400/40 dark:bg-blue-500/10 dark:text-blue-200"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="text-[10px] font-semibold uppercase tracking-wide text-blue-600 dark:text-blue-300">
+                      ATS Score
+                    </p>
+                    <p className="text-3xl font-semibold">{analysis.atsScore}</p>
+                  </div>
+                  <p className="text-[10px] text-blue-700/80 dark:text-blue-200/70">
+                    {formatTimestamp(analysis.createdAt)}
                   </p>
-                  {analysis.strengths.length > 0 ? (
-                    <ul className="ml-3 mt-1 list-disc space-y-1">
-                      {analysis.strengths.map((item) => (
-                        <li key={item}>{item}</li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className="mt-1 text-blue-700/80 dark:text-blue-200/60">None identified.</p>
-                  )}
                 </div>
-                <div>
-                  <p className="font-semibold uppercase tracking-wide text-[10px] text-blue-700 dark:text-blue-200">
-                    Weaknesses
+                {fallbackMessage ? (
+                  <p className="mt-3 rounded-xl bg-amber-100 px-3 py-2 text-[10px] font-semibold text-amber-700 dark:bg-amber-500/20 dark:text-amber-200">
+                    {fallbackMessage}
                   </p>
-                  {analysis.weaknesses.length > 0 ? (
-                    <ul className="ml-3 mt-1 list-disc space-y-1">
-                      {analysis.weaknesses.map((item) => (
-                        <li key={item}>{item}</li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className="mt-1 text-blue-700/80 dark:text-blue-200/60">None noted.</p>
-                  )}
+                ) : null}
+                <div className="mt-4 grid gap-4 text-[11px] sm:grid-cols-2">
+                  <div>
+                    <p className="font-semibold uppercase tracking-wide text-[10px] text-blue-700 dark:text-blue-200">
+                      Positive Highlights
+                    </p>
+                    {analysis.feedback.positive.length > 0 ? (
+                      <ul className="ml-3 mt-1 list-disc space-y-1">
+                        {analysis.feedback.positive.map((item) => (
+                          <li key={item}>{item}</li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="mt-1 text-blue-700/80 dark:text-blue-200/60">No highlights captured yet.</p>
+                    )}
+                  </div>
+                  <div>
+                    <p className="font-semibold uppercase tracking-wide text-[10px] text-blue-700 dark:text-blue-200">
+                      Improvements
+                    </p>
+                    {analysis.feedback.improvements.length > 0 ? (
+                      <ul className="ml-3 mt-1 list-disc space-y-1">
+                        {analysis.feedback.improvements.map((item) => (
+                          <li key={item}>{item}</li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="mt-1 text-blue-700/80 dark:text-blue-200/60">No improvements noted.</p>
+                    )}
+                  </div>
+                </div>
+                <div className="mt-4 grid gap-4 text-[11px] sm:grid-cols-2">
+                  <div>
+                    <p className="font-semibold uppercase tracking-wide text-[10px] text-blue-700 dark:text-blue-200">
+                      Extracted Keywords
+                    </p>
+                    {analysis.keywords.extracted.length > 0 ? (
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {analysis.keywords.extracted.map((keyword) => (
+                          <span
+                            key={keyword}
+                            className="rounded-full bg-white/70 px-2 py-0.5 text-[11px] font-medium text-blue-700 dark:bg-blue-400/20 dark:text-blue-100"
+                          >
+                            {keyword}
+                          </span>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="mt-2 text-blue-700/80 dark:text-blue-200/60">No target keywords detected.</p>
+                    )}
+                  </div>
+                  <div>
+                    <p className="font-semibold uppercase tracking-wide text-[10px] text-blue-700 dark:text-blue-200">
+                      Missing Keywords
+                    </p>
+                    {analysis.keywords.missing.length > 0 ? (
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {analysis.keywords.missing.map((keyword) => (
+                          <span
+                            key={keyword}
+                            className="rounded-full border border-blue-400/60 px-2 py-0.5 text-[11px] font-medium text-blue-700 dark:border-blue-300/60 dark:text-blue-100"
+                          >
+                            {keyword}
+                          </span>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="mt-2 text-blue-700/80 dark:text-blue-200/60">
+                        Great coverage of tracked keywords.
+                      </p>
+                    )}
+                  </div>
                 </div>
               </div>
-              {analysis.keywordsMatched.length > 0 ? (
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {analysis.keywordsMatched.map((keyword) => (
-                    <span
-                      key={keyword}
-                      className="rounded-full bg-white/70 px-2 py-0.5 text-[11px] font-medium text-blue-700 dark:bg-blue-400/20 dark:text-blue-100"
-                    >
-                      {keyword}
-                    </span>
-                  ))}
-                </div>
-              ) : null}
-              {analysis.message ? (
-                <p className="mt-3 text-[11px] italic text-blue-700/80 dark:text-blue-200/70">
-                  {analysis.message}
-                </p>
-              ) : null}
-            </div>
-          ))}
+            );
+          })}
         </div>
       ) : null}
     </li>

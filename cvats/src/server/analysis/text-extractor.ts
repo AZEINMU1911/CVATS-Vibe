@@ -40,9 +40,7 @@ const extractDocxText = async (): Promise<string> => {
   return "";
 };
 
-export const extractTextFromFile = async (url: string, mimeType: string): Promise<string> => {
-  const buffer = await fetchFileBuffer(url);
-
+export const extractTextFromBuffer = async (buffer: Buffer, mimeType: string): Promise<string> => {
   if (mimeType === "application/pdf") {
     return extractPdfText(buffer);
   }
@@ -55,4 +53,9 @@ export const extractTextFromFile = async (url: string, mimeType: string): Promis
   }
 
   return buffer.toString(DEFAULT_ENCODING);
+};
+
+export const extractTextFromFile = async (url: string, mimeType: string): Promise<string> => {
+  const buffer = await fetchFileBuffer(url);
+  return extractTextFromBuffer(buffer, mimeType);
 };

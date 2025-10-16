@@ -1,317 +1,312 @@
-import { GoogleGenerativeAI, type GenerativeModel } from "@google/generative-ai";
+import {
+  GoogleGenerativeAI,
+  HarmBlockThreshold,
+  HarmCategory,
+  type Content,
+  type GenerateContentRequest,
+  type GenerativeModel,
+  type SafetySetting,
+} from "@google/generative-ai";
+import { GoogleAIFileManager } from "@google/generative-ai/server";
+import { z } from "zod";
 
-export interface GeminiOptions {
-  model?: string;
-  maxTokens?: number;
+export interface GeminiFileInput {
+  file: Buffer;
+  mime?: string;
 }
 
-export interface GeminiAnalysis {
-  summary: string;
-  strengths: string[];
-  weaknesses: string[];
-  overallScore: number;
-}
+const RESULT_SCHEMA = z.object({
+  atsScore: z.number().int().min(0).max(100),
+  feedback: z.object({
+    positive: z.array(z.string()),
+    improvements: z.array(z.string()),
+  }),
+  keywords: z.object({
+    extracted: z.array(z.string()),
+    missing: z.array(z.string()),
+  }),
+});
+
+export type GeminiFileAnalysis = z.infer<typeof RESULT_SCHEMA>;
 
 export class GeminiQuotaError extends Error {
-  constructor(public readonly reason: "QUOTA" | "COOLDOWN", message: string, public readonly retryAt?: number) {
+  constructor(message: string, public readonly retryAt?: number) {
     super(message);
     this.name = "GeminiQuotaError";
   }
 }
 
-type GeminiContent = Array<{ role: "user" | "system" | "model"; parts: Array<{ text: string }> }>;
+export class GeminiParseError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "GeminiParseError";
+  }
+}
 
 const DEFAULT_MODEL = process.env.GEMINI_MODEL ?? "gemini-2.5-flash";
 const DEFAULT_MAX_TOKENS = Number.parseInt(process.env.GEMINI_MAX_TOKENS ?? "1024", 10) || 1024;
-const MAX_CHARS = 7000;
-const CHUNK_SIZE = 3500;
-const DEFAULT_MAX_RETRIES = Number.parseInt(process.env.GEMINI_MAX_RETRIES ?? "3", 10) || 3;
-const COOLDOWN_MS = (Number.parseInt(process.env.GEMINI_COOLDOWN_SECONDS ?? "60", 10) || 60) * 1000;
-const CACHE_TTL_MS = (Number.parseInt(process.env.GEMINI_CACHE_TTL_SECONDS ?? "3600", 10) || 3600) * 1000;
-const CACHE_LIMIT = 100;
-const SUMMARY_PROMPT =
-  "Summarize this resume segment in under 120 words focusing on technical experience, skills, and outcomes.";
-const SYSTEM_PROMPT =
-  "You are a CV reviewer. Extract strengths/weaknesses, produce a 0-100 score for role-agnostic software SWE fit. Be concise and return strict JSON.";
+const MAX_BACKOFF_MS = Number.parseInt(process.env.GEMINI_MAX_BACKOFF_MS ?? "4000", 10) || 4000;
+const PROMPT_JSON_ONLY =
+  "You are an applicant tracking system reviewer. Respond in STRICT JSON only (no markdown), matching this schema:\n{\n  \"atsScore\": number 0-100,\n  \"feedback\": { \"positive\": string[], \"improvements\": string[] },\n  \"keywords\": { \"extracted\": string[], \"missing\": string[] }\n}\nKeep arrays concise and free of empty strings.";
 
-const emailRegex = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
-const phoneRegex = /\+?\d[\d\s().-]{7,}\d/g;
-
-const cooldownByModel = new Map<string, number>();
-const cacheStore = new Map<string, { value: GeminiAnalysis; expiresAt: number }>();
-
-const sanitizeText = (text: string): string =>
-  text.replace(emailRegex, "[redacted email]").replace(phoneRegex, "[redacted phone]").trim();
-
-const chunkText = (text: string, maxChars: number): string[] => {
-  const segments: string[] = [];
-  let buffer = "";
-  for (const part of text.split(/\n{2,}/)) {
-    const piece = part.trim();
-    if (!piece) continue;
-    const combined = buffer ? `${buffer}\n\n${piece}` : piece;
-    if (combined.length <= maxChars) {
-      buffer = combined;
-      continue;
-    }
-    if (buffer) segments.push(buffer);
-    if (piece.length <= maxChars) {
-      buffer = piece;
-      continue;
-    }
-    for (let start = 0; start < piece.length; start += maxChars) {
-      segments.push(piece.slice(start, start + maxChars));
-    }
-    buffer = "";
+const isDev = process.env.NODE_ENV === "development";
+const devLog = (event: string, payload?: Record<string, unknown>) => {
+  if (!isDev) return;
+  if (payload) {
+    console.debug(event, payload);
+  } else {
+    console.debug(event);
   }
-  if (buffer) segments.push(buffer);
-  return segments.length > 0 ? segments : [text.slice(0, maxChars)];
 };
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-const getModel = (modelId: string, systemInstruction?: string): GenerativeModel => {
+const getApiKey = (): string => {
   const apiKey = process.env.GOOGLE_GEMINI_API_KEY;
   if (!apiKey) {
     throw new Error("Gemini API key is not configured");
   }
-  const client = new GoogleGenerativeAI(apiKey);
-  return client.getGenerativeModel(systemInstruction ? { model: modelId, systemInstruction } : { model: modelId });
+  return apiKey;
 };
+
+const SAFETY_SETTINGS: SafetySetting[] = [
+  { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+  { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
+  { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
+  { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+];
+
+const getModel = (): GenerativeModel => {
+  const genAI = new GoogleGenerativeAI(getApiKey());
+  return genAI.getGenerativeModel({
+    model: DEFAULT_MODEL,
+    generationConfig: {
+      temperature: 0.2,
+      maxOutputTokens: DEFAULT_MAX_TOKENS,
+      responseMimeType: "application/json",
+    },
+    safetySettings: SAFETY_SETTINGS,
+  });
+};
+
+const getFileManager = (): GoogleAIFileManager => new GoogleAIFileManager(getApiKey());
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const getStatus = (error: unknown): number | null => {
-  if (typeof error !== "object" || !error) {
-    return null;
-  }
+  if (typeof error !== "object" || !error) return null;
   const candidate = error as { status?: unknown; cause?: unknown };
-  if (typeof candidate.status === "number") {
-    return candidate.status;
-  }
-  if (candidate.cause) {
-    return getStatus(candidate.cause);
-  }
+  if (typeof candidate.status === "number") return candidate.status;
+  if (candidate.cause) return getStatus(candidate.cause);
   return null;
 };
 
-const findErrorDetails = (error: unknown): unknown[] => {
-  if (typeof error !== "object" || !error) {
-    return [];
-  }
+const extractRetryMs = (error: unknown): number | null => {
+  if (typeof error !== "object" || !error) return null;
   const candidate = error as { errorDetails?: unknown; cause?: unknown };
   if (Array.isArray(candidate.errorDetails)) {
-    return candidate.errorDetails;
-  }
-  if (candidate.cause) {
-    return findErrorDetails(candidate.cause);
-  }
-  return [];
-};
-
-const parseRetryMs = (details: unknown[]): number | null => {
-  for (const entry of details) {
-    if (typeof entry !== "object" || !entry) continue;
-    const record = entry as Record<string, unknown>;
-    if (record["@type"] === "type.googleapis.com/google.rpc.RetryInfo") {
-      const delay = record.retryDelay;
-      if (typeof delay === "string") {
-        const match = delay.match(/([0-9.]+)s/);
-        if (match) {
-          return Math.max(0, Math.round(Number(match[1]) * 1000));
+    for (const detail of candidate.errorDetails) {
+      if (typeof detail !== "object" || !detail) continue;
+      const record = detail as Record<string, unknown>;
+      if (record["@type"] === "type.googleapis.com/google.rpc.RetryInfo") {
+        const retryDelay = record.retryDelay;
+        if (typeof retryDelay === "string") {
+          const match = retryDelay.match(/([0-9.]+)s/);
+          if (match) {
+            return Math.max(0, Math.round(Number(match[1]) * 1000));
+          }
         }
       }
     }
+  }
+  if (candidate.cause) return extractRetryMs(candidate.cause);
+  return null;
+};
+
+type AttemptOutcome = {
+  text: string;
+  finishReason: string;
+  promptFeedback?: unknown;
+};
+
+const runModelRequest = async (
+  model: GenerativeModel,
+  request: GenerateContentRequest,
+): Promise<AttemptOutcome> => {
+  try {
+    const result = await model.generateContent(request);
+    const candidate = result.response?.candidates?.[0];
+    const finishReason = candidate?.finishReason ?? "UNKNOWN";
+    const parts = candidate?.content?.parts ?? [];
+    const text = parts
+      .map((part) => (typeof part.text === "string" ? part.text : ""))
+      .join("")
+      .trim();
+    const promptFeedback = result.response?.promptFeedback;
+    devLog("GEMINI_ATTEMPT_FINISH", { finishReason, promptFeedback });
+    return { text, finishReason, promptFeedback };
+  } catch (error) {
+    const status = getStatus(error);
+    if (status === 429) {
+      const retryMs = Math.min(extractRetryMs(error) ?? 1000, MAX_BACKOFF_MS);
+      await sleep(retryMs);
+      throw new GeminiQuotaError("Gemini quota exceeded", Date.now() + retryMs);
+    }
+    if (status === 400) {
+      console.warn("[gemini] safety setting issue", (error as Error)?.message ?? "");
+      throw new GeminiParseError("SAFETY_REJECTION");
+    }
+    throw error;
+  }
+};
+
+const shouldRetry = (outcome: AttemptOutcome): boolean => {
+  if (!outcome.text.trim()) return true;
+  if (outcome.finishReason && outcome.finishReason !== "STOP") return true;
+  return false;
+};
+
+const buildInlineContents = (file: Buffer, mime?: string): Content[] => {
+  const normalizedMime = mime?.trim() || "application/pdf";
+  return [
+    {
+      role: "user",
+      parts: [
+        { inlineData: { data: file.toString("base64"), mimeType: normalizedMime } },
+        { text: PROMPT_JSON_ONLY },
+      ],
+    },
+  ];
+};
+
+const buildFileContents = (fileUri: string, mime?: string): Content[] => {
+  const normalizedMime = mime?.trim() || "application/pdf";
+  return [
+    {
+      role: "user",
+      parts: [
+        { fileData: { fileUri, mimeType: normalizedMime } },
+        { text: PROMPT_JSON_ONLY },
+      ],
+    },
+  ];
+};
+
+const stripMarkdownFence = (value: string): string | null => {
+  const match = value.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (match?.[1]) {
+    return match[1].trim();
   }
   return null;
 };
 
-const jitter = (base: number): number => {
-  const offset = Math.floor(Math.random() * 400) - 200;
-  return Math.max(0, base + offset);
-};
-
-const ensureNoCooldown = (modelId: string) => {
-  const resumeAt = cooldownByModel.get(modelId);
-  if (resumeAt && resumeAt > Date.now()) {
-    throw new GeminiQuotaError("COOLDOWN", "Gemini model cooling down", resumeAt);
-  }
-};
-
-const startCooldown = (modelId: string) => {
-  cooldownByModel.set(modelId, Date.now() + COOLDOWN_MS);
-};
-
-const handleQuotaError = (modelId: string, retryMs: number | null): GeminiQuotaError => {
-  startCooldown(modelId);
-  const retryAt = retryMs ? Date.now() + retryMs : undefined;
-  return new GeminiQuotaError("QUOTA", "Gemini quota exceeded", retryAt);
-};
-
-const generateWithRetry = async (
-  model: GenerativeModel,
-  modelId: string,
-  contents: GeminiContent,
-  maxTokens: number,
-  maxRetries: number,
-  temperature: number,
-): Promise<string> => {
-  ensureNoCooldown(modelId);
-  let attempt = 0;
-  while (attempt < maxRetries) {
+const parseGeminiJson = (payload: string): GeminiFileAnalysis => {
+  const attemptParse = (source: string): GeminiFileAnalysis => {
+    const trimmed = source.trim();
+    if (!trimmed) {
+      throw new GeminiParseError("EMPTY_OR_NON_JSON");
+    }
+    let parsed: unknown;
     try {
-      const result = await model.generateContent({
-        contents,
-        generationConfig: { maxOutputTokens: maxTokens, temperature },
-      });
-      return result?.response?.text()?.trim() ?? "";
-    } catch (error) {
-      const status = getStatus(error);
-      const retryDetails = parseRetryMs(findErrorDetails(error));
-      if (status === 429) {
-        const delay = retryDetails ?? jitter([1000, 2000, 4000][Math.min(attempt, 2)] ?? 1000);
-        console.warn("GEMINI_429", { model: modelId, attempt, delay });
-        if (attempt >= maxRetries - 1) {
-          throw handleQuotaError(modelId, delay);
-        }
-        startCooldown(modelId);
-        await sleep(delay);
-        attempt += 1;
-        continue;
-      }
-      console.error("GEMINI_ANALYSIS_FAILURE", { model: modelId, status });
-      throw error;
+      parsed = JSON.parse(trimmed);
+    } catch {
+      throw new GeminiParseError("EMPTY_OR_NON_JSON");
     }
-  }
-  throw new GeminiQuotaError("QUOTA", "Gemini retries exhausted");
-};
-
-const summarizeIfNeeded = async (
-  model: GenerativeModel,
-  modelId: string,
-  text: string,
-  maxTokens: number,
-  maxRetries: number,
-): Promise<string> => {
-  if (text.length <= MAX_CHARS) {
-    return text;
-  }
-  const chunks = chunkText(text, CHUNK_SIZE);
-  const summaries: string[] = [];
-  for (const chunk of chunks) {
-    const summary = await generateWithRetry(
-      model,
-      modelId,
-      [{ role: "user", parts: [{ text: `${SUMMARY_PROMPT}\n\n${chunk}` }] }],
-      maxTokens,
-      maxRetries,
-      0.3,
-    );
-    if (summary) {
-      summaries.push(summary);
+    const validated = RESULT_SCHEMA.safeParse(parsed);
+    if (!validated.success) {
+      throw new GeminiParseError("EMPTY_OR_NON_JSON");
     }
-  }
-  return summaries.join("\n").slice(0, MAX_CHARS);
-};
-
-const runAnalysis = async (
-  model: GenerativeModel,
-  modelId: string,
-  resume: string,
-  maxTokens: number,
-  maxRetries: number,
-  enforceJson: boolean,
-): Promise<string> => {
-  const appendix = enforceJson ? "\nRespond with JSON only." : "";
-  const prompt = `Resume text:\n${resume}${appendix}`;
-  return generateWithRetry(
-    model,
-    modelId,
-    [{ role: "user", parts: [{ text: prompt }] }],
-    maxTokens,
-    maxRetries,
-    0.2,
-  );
-};
-
-const shapeResult = (raw: unknown): GeminiAnalysis => {
-  const data = typeof raw === "object" && raw ? (raw as Record<string, unknown>) : {};
-  const toList = (value: unknown) =>
-    Array.isArray(value) ? value.map((item) => String(item)).filter((item) => item.length > 0) : [];
-  const score = Number(data.overallScore);
-  const bounded = Number.isFinite(score) ? Math.min(100, Math.max(0, Math.round(score))) : 0;
-  return {
-    summary: typeof data.summary === "string" ? data.summary.trim() : "",
-    strengths: toList(data.strengths),
-    weaknesses: toList(data.weaknesses),
-    overallScore: bounded,
+    return validated.data;
   };
-};
 
-const parseGeminiJson = (payload: string): GeminiAnalysis | null => {
   try {
-    return shapeResult(JSON.parse(payload));
+    return attemptParse(payload);
   } catch (error) {
-    console.warn("GEMINI_PARSE_ERROR", error);
-    return null;
+    if (error instanceof GeminiParseError) {
+      const stripped = stripMarkdownFence(payload);
+      if (stripped) {
+        return attemptParse(stripped);
+      }
+    }
+    throw new GeminiParseError("EMPTY_OR_NON_JSON");
   }
 };
 
-export const analyzeWithGemini = async (text: string, opts?: GeminiOptions): Promise<GeminiAnalysis> => {
-  const sanitized = sanitizeText(text);
-  if (!sanitized) {
-    return { summary: "", strengths: [], weaknesses: [], overallScore: 0 };
+const ensureFileActive = async (
+  manager: GoogleAIFileManager,
+  metadata: { name?: string; uri?: string; state?: string } | undefined,
+): Promise<string | null> => {
+  if (!metadata?.name) return metadata?.uri ?? null;
+  if (metadata.state === "ACTIVE" && metadata.uri) {
+    return metadata.uri;
   }
-  const modelId = opts?.model ?? DEFAULT_MODEL;
-  const maxTokens = opts?.maxTokens ?? DEFAULT_MAX_TOKENS;
-  const maxRetries = DEFAULT_MAX_RETRIES;
-  const summaryModel = getModel(modelId);
-  const analysisModel = getModel(modelId, SYSTEM_PROMPT);
-  const prepared = await summarizeIfNeeded(summaryModel, modelId, sanitized, maxTokens, maxRetries);
-  const first = parseGeminiJson(await runAnalysis(analysisModel, modelId, prepared, maxTokens, maxRetries, false));
-  if (first) {
-    return first;
-  }
-  const retry = parseGeminiJson(await runAnalysis(analysisModel, modelId, prepared, maxTokens, maxRetries, true));
-  if (retry) {
-    return retry;
-  }
-  throw new Error("Gemini returned an unreadable response");
-};
 
-const makeCacheKey = (cvId: string, keywords: readonly string[], model: string): string => {
-  const normalized = [...keywords].map((item) => item.toLowerCase()).sort();
-  return `${cvId}|${normalized.join(";")}|${model}`;
-};
-
-export const getGeminiCache = (cvId: string, keywords: readonly string[], model: string) => {
-  const key = makeCacheKey(cvId, keywords, model);
-  const entry = cacheStore.get(key);
-  if (!entry || entry.expiresAt < Date.now()) {
-    cacheStore.delete(key);
-    return null;
-  }
-  cacheStore.delete(key);
-  cacheStore.set(key, entry);
-  return entry.value;
-};
-
-export const setGeminiCache = (cvId: string, keywords: readonly string[], model: string, value: GeminiAnalysis) => {
-  const key = makeCacheKey(cvId, keywords, model);
-  cacheStore.delete(key);
-  if (cacheStore.size >= CACHE_LIMIT) {
-    const oldest = cacheStore.keys().next().value;
-    if (oldest) {
-      cacheStore.delete(oldest);
+  let attempts = 0;
+  while (attempts < 5) {
+    attempts += 1;
+    await sleep(200 * attempts);
+    try {
+      const file = await manager.getFile(metadata.name);
+      if (file?.state === "ACTIVE" && file?.uri) {
+        return file.uri;
+      }
+    } catch {
+      break;
     }
   }
-  cacheStore.set(key, { value, expiresAt: Date.now() + CACHE_TTL_MS });
+  return metadata?.uri ?? null;
 };
 
-export const isGeminiCoolingDown = (model: string): boolean => {
-  const resumeAt = cooldownByModel.get(model) ?? 0;
-  return resumeAt > Date.now();
+const runFileUploadAttempt = async (
+  model: GenerativeModel,
+  input: GeminiFileInput,
+): Promise<AttemptOutcome> => {
+  const manager = getFileManager();
+  const upload = await manager.uploadFile(input.file, {
+    mimeType: input.mime?.trim() || "application/pdf",
+    displayName: "cv-analysis",
+  });
+  const fileName = upload.file?.name;
+  const fileUri = await ensureFileActive(manager, upload.file);
+
+  if (!fileName || !fileUri) {
+    devLog("GEMINI_FILE_UPLOAD_MISSING_URI", { fileName, state: upload.file?.state });
+    return { text: "", finishReason: "MISSING_URI" };
+  }
+
+  try {
+    const request: GenerateContentRequest = { contents: buildFileContents(fileUri, input.mime) };
+    return await runModelRequest(model, request);
+  } finally {
+    void manager.deleteFile(fileName).catch(() => undefined);
+  }
 };
 
-export const resetGeminiState = (): void => {
-  cooldownByModel.clear();
-  cacheStore.clear();
+export const analyzeWithGeminiFile = async (input: GeminiFileInput): Promise<GeminiFileAnalysis> => {
+  const model = getModel();
+  const inlineRequest: GenerateContentRequest = { contents: buildInlineContents(input.file, input.mime) };
+  const inlineOutcome = await runModelRequest(model, inlineRequest);
+
+  if (!shouldRetry(inlineOutcome)) {
+    if (isDev) console.log("GEMINI_RAW_RESPONSE", inlineOutcome.text);
+    return parseGeminiJson(inlineOutcome.text);
+  }
+
+  devLog("GEMINI_INLINE_EMPTY", {
+    finishReason: inlineOutcome.finishReason,
+    promptFeedback: inlineOutcome.promptFeedback,
+  });
+
+  const fileOutcome = await runFileUploadAttempt(model, input);
+  if (!shouldRetry(fileOutcome)) {
+    if (isDev) console.log("GEMINI_RAW_RESPONSE", fileOutcome.text);
+    return parseGeminiJson(fileOutcome.text);
+  }
+
+  devLog("GEMINI_FILE_EMPTY", {
+    finishReason: fileOutcome.finishReason,
+    promptFeedback: fileOutcome.promptFeedback,
+  });
+
+  throw new GeminiParseError("EMPTY_OR_NON_JSON");
 };
+
+export { parseGeminiJson };
