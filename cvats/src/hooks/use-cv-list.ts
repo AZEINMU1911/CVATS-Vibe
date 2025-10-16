@@ -1,6 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import Swal from "sweetalert2";
-import { getActiveUserEmail } from "@/lib/auth-client";
 
 export interface CvListItem {
   id: string;
@@ -29,11 +28,10 @@ const PAGE_SIZE = 10;
 
 export const useCvList = () => {
   const [items, setItems] = useState<CvListItem[]>([]);
-  const [fetchState, setFetchState] = useState<FetchState>("loading");
+  const [fetchState, setFetchState] = useState<FetchState>("idle");
   const [nextCursor, setNextCursor] = useState<string | null | undefined>(undefined);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const isInitialLoad = useRef(true);
 
   const loadPage = useCallback(
     async (cursor?: string | null, options?: RefreshOptions) => {
@@ -44,9 +42,6 @@ export const useCvList = () => {
 
       const response = await fetch(`/api/uploads?${params.toString()}`, {
         credentials: "include",
-        headers: {
-          "x-user-email": getActiveUserEmail(),
-        },
       });
       if (!response.ok) {
         throw new Error("Failed to load CVs");
@@ -83,13 +78,6 @@ export const useCvList = () => {
     [loadPage],
   );
 
-  useEffect(() => {
-    if (isInitialLoad.current) {
-      isInitialLoad.current = false;
-      void refresh();
-    }
-  }, [refresh]);
-
   const loadMore = useCallback(async () => {
     if (!nextCursor || isLoadingMore) {
       return;
@@ -110,9 +98,6 @@ export const useCvList = () => {
       const response = await fetch(`/api/uploads?id=${encodeURIComponent(id)}`, {
         method: "DELETE",
         credentials: "include",
-        headers: {
-          "x-user-email": getActiveUserEmail(),
-        },
       });
       if (response.status === 204) {
         setItems((current) => current.filter((item) => item.id !== id));

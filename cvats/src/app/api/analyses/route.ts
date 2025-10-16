@@ -4,7 +4,7 @@ import { cvRepository } from "@/server/cv-repository";
 import { analysisRepository } from "@/server/analysis-repository";
 import { extractTextFromFile } from "@/server/analysis/text-extractor";
 import { scoreKeywords } from "@/server/analysis/score";
-import { getCurrentUser } from "@/server/auth";
+import { getAuthSession } from "@/lib/auth/session";
 
 const DEFAULT_KEYWORDS = ["javascript", "react", "node", "typescript", "nextjs"] as const;
 
@@ -21,7 +21,10 @@ const mapKeywords = (keywords?: string[]): string[] => {
 };
 
 export async function POST(request: Request) {
-  const user = getCurrentUser(request);
+  const session = await getAuthSession();
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
   const json = await request.json().catch(() => null);
   const parsed = postSchema.safeParse(json);
   if (!parsed.success) {
@@ -30,7 +33,7 @@ export async function POST(request: Request) {
 
   const { cvId, keywords } = parsed.data;
   const cv = await cvRepository.findById(cvId);
-  if (!cv || cv.userId !== user.id) {
+  if (!cv || cv.userId !== session.user.id) {
     return NextResponse.json({ error: "CV not found" }, { status: 404 });
   }
 
@@ -77,7 +80,10 @@ export async function POST(request: Request) {
 }
 
 export async function GET(request: Request) {
-  const user = getCurrentUser(request);
+  const session = await getAuthSession();
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
   const { searchParams } = new URL(request.url);
   const cvId = searchParams.get("cvId");
   if (!cvId) {
@@ -85,7 +91,7 @@ export async function GET(request: Request) {
   }
 
   const cv = await cvRepository.findById(cvId);
-  if (!cv || cv.userId !== user.id) {
+  if (!cv || cv.userId !== session.user.id) {
     return NextResponse.json({ analyses: [] }, { status: 200 });
   }
 

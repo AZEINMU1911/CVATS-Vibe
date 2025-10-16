@@ -22,6 +22,8 @@ export default defineConfig({
       NEXT_PUBLIC_ALLOWED_MIME:
         process.env.NEXT_PUBLIC_ALLOWED_MIME ??
         "application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      NEXTAUTH_URL: process.env.NEXTAUTH_URL ?? "http://127.0.0.1:3000",
+      NEXTAUTH_SECRET: process.env.NEXTAUTH_SECRET ?? "development-secret",
     },
   },
   projects: [

@@ -1,14 +1,14 @@
 "use client";
 
 import type { FormEvent, ReactNode, RefObject } from "react";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { signOut, useSession } from "next-auth/react";
 import { useUploadToCloudinary, type UploadStatus } from "@/hooks/use-upload-to-cloudinary";
 import { validateFile } from "@/lib/validate-file";
 import { useAnalyze } from "@/hooks/use-analyze";
 import { useCvList } from "@/hooks/use-cv-list";
 import Swal from "sweetalert2";
-import { getActiveUserEmail } from "@/lib/auth-client";
 
 interface CvSummary {
   id: string;
@@ -464,6 +464,7 @@ const CvList = ({
 );
 
 export default function DashboardPage() {
+  const { data: session, status: sessionStatus } = useSession();
   const { cvs, fetchState, nextCursor, isLoadingMore, loadMore, deleteCv, refresh, error } =
     useCvList();
   const [clientError, setClientError] = useState<string | null>(null);
@@ -532,8 +533,8 @@ export default function DashboardPage() {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "x-user-email": getActiveUserEmail(),
           },
+          credentials: "include",
           body: JSON.stringify({
             fileUrl: cloudinary.fileUrl,
             originalName: file.name,
@@ -579,6 +580,20 @@ export default function DashboardPage() {
   const selectedFileName = selectedFileInfo?.name ?? null;
   const selectedFileSize = selectedFileInfo?.size ?? null;
 
+  useEffect(() => {
+    if (sessionStatus === "authenticated") {
+      void refresh();
+    }
+  }, [sessionStatus, refresh]);
+
+  if (sessionStatus === "loading") {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-slate-950 text-slate-100">
+        <p className="text-sm">Loading your dashboard...</p>
+      </main>
+    );
+  }
+
   return (
     <div className="relative min-h-[80vh] w-full bg-gradient-to-b from-slate-950 via-slate-900 to-slate-950 px-4 py-16 text-slate-900 dark:text-slate-100">
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(59,130,246,0.15),_transparent_55%)]" aria-hidden />
@@ -596,13 +611,25 @@ export default function DashboardPage() {
                   the resulting URL and metadata for downstream analysis.
                 </p>
               </div>
-              <div className="flex flex-wrap gap-3 text-xs font-medium">
+              <div className="flex flex-wrap items-center gap-3 text-xs font-medium">
                 <span className="rounded-full bg-white/20 px-4 py-2 text-white">
                   {stats.count} {stats.count === 1 ? "CV stored" : "CVs stored"}
                 </span>
                 <span className="rounded-full bg-white/10 px-4 py-2 text-white/90">
                   Total size {stats.totalLabel}
                 </span>
+                {session?.user?.email ? (
+                  <span className="rounded-full bg-white/10 px-4 py-2 text-white/80">
+                    {session.user.email}
+                  </span>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() => void signOut({ callbackUrl: "/" })}
+                  className="rounded-full border border-white/30 px-4 py-2 text-white transition hover:bg-white/10"
+                >
+                  Sign out
+                </button>
               </div>
             </div>
           </div>
