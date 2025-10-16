@@ -26,7 +26,7 @@ export interface CvRecord {
 
 export interface CreateCvInput {
   fileName: string;
-  secureUrl: string;
+  secureUrl?: string | null;
   publicId: string;
   resourceType: string;
   accessMode: string;
@@ -107,7 +107,7 @@ const createPrismaRepository = (): CvRepository => {
         data: {
           userId,
           fileName: input.fileName,
-          secureUrl: input.secureUrl,
+          secureUrl: input.secureUrl ?? null,
           publicId: input.publicId,
           resourceType: input.resourceType,
           accessMode: input.accessMode,
@@ -176,7 +176,7 @@ const createMemoryRepository = (): CvRepository => {
         id: randomUUID(),
         userId,
         fileName: input.fileName,
-        secureUrl: input.secureUrl,
+        secureUrl: input.secureUrl ?? input.legacyFileUrl ?? "",
         fileUrl: input.legacyFileUrl ?? null,
         fileSize: input.fileSize,
         bytes: input.bytes ?? null,
