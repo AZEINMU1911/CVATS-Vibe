@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { POST } from "@/app/api/analyses/route";
 import { cvRepository, resetCvRepository } from "@/server/cv-repository";
+import type { CreateCvInput } from "@/server/cv-repository";
 import { analysisRepository, resetAnalysisRepository } from "@/server/analysis-repository";
 import { resetRateLimit } from "@/server/rate-limit";
 import {
@@ -63,7 +64,10 @@ type AnalysisResponseBody = { analysis: ApiAnalysis };
 const makeResponse = (buffer: ArrayBuffer, mime = "application/pdf"): Response =>
   new Response(buffer, {
     status: 200,
-    headers: { "content-type": mime },
+    headers: {
+      "content-type": mime,
+      "content-length": String(buffer.byteLength),
+    },
   });
 
 beforeEach(() => {
@@ -77,9 +81,19 @@ beforeEach(() => {
   extractTextFromBufferMock.mockResolvedValue("javascript react node");
   analyzeWithGeminiMock.mockResolvedValue(sampleGeminiResult);
   process.env.GOOGLE_GEMINI_API_KEY = "test-key";
-  global.fetch = vi.fn(async () => {
-    const encoder = new TextEncoder();
-    return makeResponse(encoder.encode("%PDF resume").buffer);
+  const encoder = new TextEncoder();
+  const defaultBuffer = encoder.encode("%PDF resume").buffer;
+  global.fetch = vi.fn(async (_input, init) => {
+    if (init?.method === "HEAD") {
+      return new Response(null, {
+        status: 200,
+        headers: {
+          "content-length": String(defaultBuffer.byteLength),
+          "content-type": "application/pdf",
+        },
+      });
+    }
+    return makeResponse(defaultBuffer);
   }) as unknown as typeof fetch;
 });
 
@@ -96,6 +110,26 @@ const createRequest = (payload: unknown) =>
     body: JSON.stringify(payload),
   });
 
+const buildCvInput = (overrides: Partial<CreateCvInput> = {}): CreateCvInput => ({
+  fileName: "sample.pdf",
+  secureUrl: "https://res.cloudinary.com/demo/raw/upload/v1/sample.pdf",
+  publicId: "cvats/sample",
+  resourceType: "raw",
+  accessMode: "public",
+  type: "upload",
+  fileSize: 2048,
+  mimeType: "application/pdf",
+  bytes: 2048,
+  format: "pdf",
+  originalFilename: "sample",
+  createdAtRaw: "2024-01-01T00:00:00Z",
+  legacyFileUrl: null,
+  ...overrides,
+});
+
+const createCv = async (overrides: Partial<CreateCvInput> = {}) =>
+  cvRepository.createForUser(USER_ID, buildCvInput(overrides));
+
 describe("POST /api/analyses", () => {
   it("returns 401 when the user is not authenticated", async () => {
     getAuthSessionMock.mockResolvedValue(null);
@@ -105,26 +139,14 @@ describe("POST /api/analyses", () => {
 
   it("returns 404 when the CV belongs to another user", async () => {
     getAuthSessionMock.mockResolvedValue({ user: { id: OTHER_USER_ID } });
-    const cv = await cvRepository.createForUser(USER_ID, {
-      fileName: "sample.pdf",
-      fileUrl: "https://example.com/sample.pdf",
-      fileSize: 1024,
-      mimeType: "application/pdf",
-      publicId: null,
-    });
+    const cv = await createCv();
 
     const response = await POST(createRequest({ cvId: cv.id }));
     expect(response.status).toBe(404);
   });
 
   it("creates a Gemini-backed analysis and persists history", async () => {
-    const cv = await cvRepository.createForUser(USER_ID, {
-      fileName: "sample.pdf",
-      fileUrl: "https://example.com/sample.pdf",
-      fileSize: 2048,
-      mimeType: "application/pdf",
-      publicId: null,
-    });
+    const cv = await createCv({ fileSize: 2048, bytes: 2048 });
 
     const response = await POST(createRequest({ cvId: cv.id }));
     expect(response.status).toBe(201);
@@ -144,18 +166,13 @@ describe("POST /api/analyses", () => {
     expect(updatedCv?.analyzedAt).toBeTruthy();
 
     expect(analyzeWithGeminiMock).toHaveBeenCalled();
-    expect(global.fetch).toHaveBeenCalledWith(cv.fileUrl);
+    expect(global.fetch).toHaveBeenCalledWith(cv.secureUrl, expect.objectContaining({ method: "HEAD" }));
+    expect(global.fetch).toHaveBeenCalledWith(cv.secureUrl);
   });
 
   it("falls back to keyword scoring when Gemini quota errors", async () => {
     analyzeWithGeminiMock.mockRejectedValueOnce(new GeminiQuotaError("Quota exceeded"));
-    const cv = await cvRepository.createForUser(USER_ID, {
-      fileName: "sample.pdf",
-      fileUrl: "https://example.com/sample.pdf",
-      fileSize: 1024,
-      mimeType: "application/pdf",
-      publicId: null,
-    });
+    const cv = await createCv();
 
     const response = await POST(createRequest({ cvId: cv.id }));
     expect(response.status).toBe(201);
@@ -170,13 +187,7 @@ describe("POST /api/analyses", () => {
 
   it("falls back with PARSE reason when Gemini request times out", async () => {
     analyzeWithGeminiMock.mockRejectedValueOnce(new GeminiParseError("TIMEOUT"));
-    const cv = await cvRepository.createForUser(USER_ID, {
-      fileName: "sample.pdf",
-      fileUrl: "https://example.com/sample.pdf",
-      fileSize: 1024,
-      mimeType: "application/pdf",
-      publicId: null,
-    });
+    const cv = await createCv();
 
     const response = await POST(createRequest({ cvId: cv.id }));
     expect(response.status).toBe(201);
@@ -188,13 +199,7 @@ describe("POST /api/analyses", () => {
 
   it("falls back with EMPTY reason when Gemini returns empty content", async () => {
     analyzeWithGeminiMock.mockRejectedValueOnce(new GeminiParseError("EMPTY_OR_NON_JSON"));
-    const cv = await cvRepository.createForUser(USER_ID, {
-      fileName: "sample.pdf",
-      fileUrl: "https://example.com/sample.pdf",
-      fileSize: 1024,
-      mimeType: "application/pdf",
-      publicId: null,
-    });
+    const cv = await createCv();
 
     const response = await POST(createRequest({ cvId: cv.id }));
     expect(response.status).toBe(201);
@@ -206,13 +211,7 @@ describe("POST /api/analyses", () => {
 
   it("falls back with EMPTY_PROD reason when Gemini signals production empty", async () => {
     analyzeWithGeminiMock.mockRejectedValueOnce(new GeminiParseError("EMPTY_PROD"));
-    const cv = await cvRepository.createForUser(USER_ID, {
-      fileName: "sample.pdf",
-      fileUrl: "https://example.com/sample.pdf",
-      fileSize: 1024,
-      mimeType: "application/pdf",
-      publicId: null,
-    });
+    const cv = await createCv();
 
     const response = await POST(createRequest({ cvId: cv.id }));
     expect(response.status).toBe(201);
@@ -224,13 +223,7 @@ describe("POST /api/analyses", () => {
 
   it("falls back with SAFETY reason when Gemini rejects safety settings", async () => {
     analyzeWithGeminiMock.mockRejectedValueOnce(new GeminiParseError("SAFETY_REJECTION"));
-    const cv = await cvRepository.createForUser(USER_ID, {
-      fileName: "sample.pdf",
-      fileUrl: "https://example.com/sample.pdf",
-      fileSize: 1024,
-      mimeType: "application/pdf",
-      publicId: null,
-    });
+    const cv = await createCv();
 
     const response = await POST(createRequest({ cvId: cv.id }));
     expect(response.status).toBe(201);
@@ -242,13 +235,7 @@ describe("POST /api/analyses", () => {
 
   it("uses fallback when Gemini API key is missing", async () => {
     delete process.env.GOOGLE_GEMINI_API_KEY;
-    const cv = await cvRepository.createForUser(USER_ID, {
-      fileName: "sample.pdf",
-      fileUrl: "https://example.com/sample.pdf",
-      fileSize: 1024,
-      mimeType: "application/pdf",
-      publicId: null,
-    });
+    const cv = await createCv();
 
     const response = await POST(createRequest({ cvId: cv.id }));
     expect(response.status).toBe(201);
@@ -259,16 +246,58 @@ describe("POST /api/analyses", () => {
     expect(analyzeWithGeminiMock).not.toHaveBeenCalled();
   });
 
+  it("returns 502 when the Cloudinary HEAD request fails", async () => {
+    global.fetch = vi.fn(async (_input, init) => {
+      if (init?.method === "HEAD") {
+        return new Response(null, { status: 404 });
+      }
+      const encoder = new TextEncoder();
+      return makeResponse(encoder.encode("%PDF resume").buffer);
+    }) as unknown as typeof fetch;
+
+    const cv = await createCv();
+    const response = await POST(createRequest({ cvId: cv.id }));
+    expect(response.status).toBe(502);
+    const body = (await response.json()) as { error?: string };
+    expect(body.error).toBe("CLOUDINARY_FETCH_FAILED");
+  });
+
+  it("normalizes legacy image delivery URLs to raw for document downloads", async () => {
+    const legacyUrl = "https://res.cloudinary.com/demo/image/upload/v1/folder/sample.pdf";
+    const encoder = new TextEncoder();
+    const buffer = encoder.encode("%PDF resume").buffer;
+    const fetchSpy = vi.fn(async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      if (init?.method === "HEAD") {
+        expect(url).toContain("/raw/upload/");
+        expect(url).not.toContain("/image/upload/");
+        return new Response(null, {
+          status: 200,
+          headers: {
+            "content-length": String(buffer.byteLength),
+            "content-type": "application/pdf",
+          },
+        });
+      }
+      return makeResponse(buffer);
+    });
+    global.fetch = fetchSpy as unknown as typeof fetch;
+
+    const cv = await createCv({ secureUrl: "", legacyFileUrl: legacyUrl });
+    const response = await POST(createRequest({ cvId: cv.id }));
+    expect(response.status).toBe(201);
+    expect(fetchSpy).toHaveBeenCalledWith(expect.stringContaining("/raw/upload/"), expect.objectContaining({ method: "HEAD" }));
+  });
+
   it("returns 413 when file exceeds configured limit", async () => {
     const largeArray = new Uint8Array(ANALYSIS_MAX_FILE_MB * 1024 * 1024 + 1);
     global.fetch = vi.fn(async () => makeResponse(largeArray.buffer)) as unknown as typeof fetch;
 
-    const cv = await cvRepository.createForUser(USER_ID, {
+    const cv = await createCv({
       fileName: "oversize.pdf",
-      fileUrl: "https://example.com/oversize.pdf",
+      secureUrl: "https://res.cloudinary.com/demo/raw/upload/v1/oversize.pdf",
       fileSize: largeArray.length,
-      mimeType: "application/pdf",
-      publicId: null,
+      bytes: largeArray.length,
     });
 
     const response = await POST(createRequest({ cvId: cv.id }));

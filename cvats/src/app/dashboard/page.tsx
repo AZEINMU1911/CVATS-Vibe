@@ -13,11 +13,19 @@ import Swal from "sweetalert2";
 interface CvSummary {
   id: string;
   fileName: string;
-  fileUrl: string;
+  secureUrl: string;
+  fileUrl?: string | null;
   fileSize: number;
+  bytes?: number | null;
   mimeType: string;
   uploadedAt: string;
   publicId?: string | null;
+  resourceType?: string | null;
+  accessMode?: string | null;
+  type?: string | null;
+  format?: string | null;
+  originalFilename?: string | null;
+  createdAtRaw?: string | null;
   atsScore?: number | null;
   analyzedAt?: string | null;
 }
@@ -315,7 +323,7 @@ const CvCard = ({ cv, onDelete }: { cv: CvSummary; onDelete: (id: string) => Pro
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-col">
           <a
-            href={cv.fileUrl}
+            href={cv.secureUrl ?? cv.fileUrl ?? "#"}
             target="_blank"
             rel="noopener noreferrer"
             className="text-base font-semibold text-blue-700 transition group-hover:text-blue-600 dark:text-blue-300 dark:group-hover:text-blue-200"
@@ -352,7 +360,7 @@ const CvCard = ({ cv, onDelete }: { cv: CvSummary; onDelete: (id: string) => Pro
           {cv.mimeType}
         </span>
         <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1 font-medium text-slate-600 dark:bg-slate-800/80 dark:text-slate-200">
-          {formatBytes(cv.fileSize)}
+          {formatBytes(cv.bytes ?? cv.fileSize)}
         </span>
         {typeof cv.atsScore === "number" ? (
           <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1 font-medium text-slate-600 dark:bg-slate-800/80 dark:text-slate-200">
@@ -587,7 +595,7 @@ export default function DashboardPage() {
     configError,
   } = useUploadToCloudinary();
   const stats = useMemo(() => {
-    const totalBytes = cvs.reduce((acc, cv) => acc + cv.fileSize, 0);
+    const totalBytes = cvs.reduce((acc, cv) => acc + (cv.bytes ?? cv.fileSize), 0);
     return {
       count: cvs.length,
       totalBytes,
@@ -656,13 +664,16 @@ export default function DashboardPage() {
           },
           credentials: "include",
           body: JSON.stringify({
-            fileUrl: cloudinary.fileUrl,
-            originalName: file.name,
-            mime: file.type,
-            size: file.size,
-            publicId: cloudinary.publicId,
-            resourceType: cloudinary.resourceType,
-            accessMode: cloudinary.accessMode,
+            secure_url: cloudinary.secureUrl,
+            public_id: cloudinary.publicId,
+            resource_type: cloudinary.resourceType,
+            access_mode: cloudinary.accessMode,
+            type: cloudinary.type,
+            bytes: cloudinary.bytes,
+            format: cloudinary.format ?? null,
+            original_filename: cloudinary.originalFilename ?? file.name.replace(/\.[^/.]+$/, ""),
+            created_at: cloudinary.createdAt ?? new Date().toISOString(),
+            mimeType: file.type,
           }),
         });
 

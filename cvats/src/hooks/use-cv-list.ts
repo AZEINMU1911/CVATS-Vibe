@@ -5,11 +5,19 @@ export interface CvListItem {
   id: string;
   userId?: string;
   fileName: string;
-  fileUrl: string;
+  secureUrl: string;
+  fileUrl?: string | null;
   fileSize: number;
+  bytes?: number | null;
   mimeType: string;
+  format?: string | null;
   uploadedAt: string;
   publicId?: string | null;
+  resourceType?: string | null;
+  accessMode?: string | null;
+  type?: string | null;
+  originalFilename?: string | null;
+  createdAtRaw?: string | null;
   atsScore?: number | null;
   analyzedAt?: string | null;
 }

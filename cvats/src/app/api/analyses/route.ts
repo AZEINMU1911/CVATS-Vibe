@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { cvRepository } from "@/server/cv-repository";
+import type { CvRecord } from "@/server/cv-repository";
 import {
   analysisRepository,
   type AnalysisHistoryRecord,
@@ -28,6 +29,8 @@ if (isProduction) {
     "GEMINI_MODEL",
     "CLOUDINARY_CLOUD_NAME",
     "CLOUDINARY_UPLOAD_PRESET",
+    "NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME",
+    "NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET",
     "DATABASE_URL",
   ]);
 }
@@ -88,6 +91,42 @@ const toApiResponse = (record: AnalysisHistoryRecord): ApiAnalysisResponse => ({
   usedFallback: record.usedFallback,
   fallbackReason: asFallbackReason(record.fallbackReason),
 });
+
+const DOCUMENT_MIME_TYPES = new Set([
+  "application/pdf",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+]);
+
+const normalizeLegacyCloudinaryUrl = (url: string | null | undefined, mimeType: string): string | null => {
+  if (!url) return null;
+  if (!url.includes("/image/upload/")) return url;
+  if (!DOCUMENT_MIME_TYPES.has(mimeType)) return url;
+  return url.replace("/image/upload/", "/raw/upload/");
+};
+
+const resolveDownloadUrl = (cv: CvRecord): string | null => {
+  if (cv.secureUrl && cv.secureUrl.length > 0) {
+    return cv.secureUrl;
+  }
+  const fallback = normalizeLegacyCloudinaryUrl(cv.fileUrl, cv.mimeType);
+  return fallback;
+};
+
+const ensureCloudinaryReachable = async (url: string): Promise<number> => {
+  const response = await fetch(url, { method: "HEAD" });
+  if (!response.ok) {
+    throw new Error(`HEAD_STATUS_${response.status}`);
+  }
+  const lengthHeader = response.headers.get("content-length");
+  if (!lengthHeader) {
+    throw new Error("HEAD_MISSING_LENGTH");
+  }
+  const parsed = Number(lengthHeader);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error("HEAD_INVALID_LENGTH");
+  }
+  return parsed;
+};
 
 const fetchCvBinary = async (url: string): Promise<{ buffer: Buffer; mime: string | null }> => {
   const response = await fetch(url);
@@ -156,14 +195,45 @@ export async function POST(request: Request) {
     );
   }
 
+  const downloadUrl = resolveDownloadUrl(cv);
+  if (!downloadUrl) {
+    console.error("ANALYSIS_CLOUDINARY_MISSING_URL", { cvId });
+    return NextResponse.json({ error: "CLOUDINARY_FETCH_FAILED" }, { status: 502 });
+  }
+
+  let remoteSize: number | null = null;
+  try {
+    remoteSize = await ensureCloudinaryReachable(downloadUrl);
+    logAnalysis("Cloudinary HEAD ok", { cvId, url: downloadUrl, remoteSize });
+  } catch (error) {
+    console.error("ANALYSIS_CLOUDINARY_HEAD_FAILED", {
+      cvId,
+      url: downloadUrl,
+      message: (error as Error).message,
+    });
+    return NextResponse.json({ error: "CLOUDINARY_FETCH_FAILED" }, { status: 502 });
+  }
+
+  if (typeof remoteSize === "number" && remoteSize > MAX_FILE_BYTES) {
+    logAnalysis("Remote CV exceeds analysis size limit", { cvId, remoteSize });
+    return NextResponse.json(
+      { error: `File exceeds ${ANALYSIS_MAX_FILE_MB}MB analysis limit.` },
+      { status: 413 },
+    );
+  }
+
   const keywordList = mapKeywords(keywords);
   let fileDownload: { buffer: Buffer; mime: string | null };
   try {
-    fileDownload = await fetchCvBinary(cv.fileUrl);
+    fileDownload = await fetchCvBinary(downloadUrl);
     logAnalysis("Fetched CV bytes", { cvId, size: fileDownload.buffer.byteLength });
-  } catch {
-    logAnalysis("Failed downloading CV", { cvId });
-    return NextResponse.json({ error: "Unable to download CV file from storage." }, { status: 502 });
+  } catch (error) {
+    console.error("ANALYSIS_CLOUDINARY_FETCH_FAILED", {
+      cvId,
+      url: downloadUrl,
+      message: (error as Error).message,
+    });
+    return NextResponse.json({ error: "CLOUDINARY_FETCH_FAILED" }, { status: 502 });
   }
 
   if (fileDownload.buffer.byteLength > MAX_FILE_BYTES) {
