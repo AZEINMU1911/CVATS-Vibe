@@ -5,7 +5,7 @@ import type { Page } from "@playwright/test";
 test.describe.configure({ mode: "serial" });
 test.setTimeout(120_000);
 
-const getCvItems = (page: Page) => page.locator("main li");
+const getCvItems = (page: Page) => page.locator('[data-testid="cv-card"]');
 
 const setupAppRoutes = async (page: Page) => {
   await page.route("https://api.cloudinary.com/**", async (route) => {
@@ -20,18 +20,56 @@ const setupAppRoutes = async (page: Page) => {
     });
   });
 
+  let analysisCalls = 0;
+  const analysisScenarios = [
+    {
+      atsScore: 91,
+      feedback: {
+        positive: ["Strong React expertise"],
+        improvements: ["Needs more backend exposure"],
+      },
+      keywords: {
+        extracted: ["javascript", "react", "node"],
+        missing: ["typescript", "nextjs"],
+      },
+      usedFallback: false,
+      fallbackReason: null,
+    },
+    {
+      atsScore: 62,
+      feedback: {
+        positive: ["Matched javascript keyword"],
+        improvements: ["Highlight leadership achievements"],
+      },
+      keywords: {
+        extracted: ["javascript"],
+        missing: ["typescript", "nextjs"],
+      },
+      usedFallback: true,
+      fallbackReason: "EMPTY" as const,
+    },
+  ];
+
   await page.route("**/api/analyses", async (route) => {
     if (route.request().method() === "POST") {
+      const index = Math.min(analysisCalls, analysisScenarios.length - 1);
+      const scenario = analysisScenarios[index];
+      if (!scenario) {
+        throw new Error("Missing analysis scenario for intercepted request");
+      }
+      analysisCalls += 1;
       await route.fulfill({
         status: 201,
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           analysis: {
-            id: "test-analysis",
+            id: `test-analysis-${analysisCalls}`,
             cvId: route.request().postDataJSON()?.cvId ?? "cv",
-            score: 100,
-            keywordsMatched: ["javascript", "react", "node", "typescript", "nextjs"],
-            message: null,
+            atsScore: scenario.atsScore,
+            feedback: scenario.feedback,
+            keywords: scenario.keywords,
+            usedFallback: scenario.usedFallback,
+            fallbackReason: scenario.fallbackReason,
             createdAt: new Date().toISOString(),
           },
         }),
@@ -129,7 +167,19 @@ test("register, upload, and isolate CVs per user", async ({ page, browser }) => 
   const newestCard = page.locator("main li").first();
   await expect(newestCard.getByRole("link", { name: "sample.pdf" })).toBeVisible();
   await newestCard.getByRole("button", { name: "Analyze" }).click();
-  await expect(newestCard.getByText(/Score:/i)).toBeVisible({ timeout: 12000 });
+  await expect(newestCard.getByText("ATS Score", { exact: false })).toBeVisible({ timeout: 12000 });
+  await expect(newestCard.getByText("Positive Highlights", { exact: false })).toBeVisible();
+  await expect(newestCard.getByText("Strong React expertise", { exact: false })).toBeVisible();
+  await expect(newestCard.getByText("Improvements", { exact: false })).toBeVisible();
+  await expect(newestCard.getByText("Needs more backend exposure", { exact: false })).toBeVisible();
+  await expect(newestCard.locator("text=AI returned an empty result — showing basic analysis.")).toHaveCount(0);
+
+  await newestCard.getByRole("button", { name: "Analyze" }).click();
+  const fallbackBanner = newestCard.locator("text=AI returned an empty result — showing basic analysis.");
+  await expect(fallbackBanner).toBeVisible({ timeout: 12000 });
+  const fallbackCard = fallbackBanner.first().locator("xpath=ancestor::div[contains(@class,'rounded-2xl')][1]");
+  await expect(fallbackCard.getByText("Positive Highlights", { exact: false })).toBeVisible();
+  await expect(fallbackCard.getByText("Matched javascript keyword", { exact: false })).toBeVisible();
 
   const items = getCvItems(page);
   const countBeforeDelete = await items.count();

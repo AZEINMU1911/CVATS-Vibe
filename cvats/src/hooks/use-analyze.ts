@@ -4,20 +4,48 @@ import Swal from "sweetalert2";
 export interface AnalysisResult {
   id: string;
   cvId: string;
-  score: number | null;
-  keywordsMatched: string[];
-  message?: string | null;
+  atsScore: number;
+  feedback: {
+    positive: string[];
+    improvements: string[];
+  };
+  keywords: {
+    extracted: string[];
+    missing: string[];
+  };
   createdAt: string;
+  usedFallback: boolean;
+  fallbackReason: "QUOTA" | "PARSE" | "EMPTY" | null;
 }
 
 export type AnalysisStatus = "idle" | "running" | "error";
 
-const parseResponse = async (response: Response) => {
-  const data = (await response.json().catch(() => ({}))) as {
-    analysis?: AnalysisResult;
-    error?: string;
-  };
-  return data;
+const parseResponse = async (
+  response: Response,
+): Promise<{ analysis?: AnalysisResult; error?: string }> => {
+  try {
+    const data = (await response.json()) as { analysis?: AnalysisResult; error?: string };
+    return data;
+  } catch {
+    return {};
+  }
+};
+
+const firstLine = (items: string[]): string | null => {
+  const [primary] = items.filter((item) => item.trim().length > 0);
+  return primary ?? null;
+};
+
+const summaryFromAnalysis = (analysis: AnalysisResult): string => {
+  const positive = firstLine(analysis.feedback.positive);
+  if (positive) {
+    return positive;
+  }
+  const extracted = firstLine(analysis.keywords.extracted);
+  if (extracted) {
+    return `Detected keyword: ${extracted}`;
+  }
+  return analysis.usedFallback ? "Returned basic keyword scoring." : "Analysis complete.";
 };
 
 export const useAnalyze = (cvId: string) => {
@@ -52,13 +80,31 @@ export const useAnalyze = (cvId: string) => {
         return;
       }
 
-      const analysis = payload.analysis;
+      console.log("ANALYZE_RESPONSE", payload.analysis);
+
+      const fallbackReasonValue =
+        payload.analysis.fallbackReason === "QUOTA" ||
+        payload.analysis.fallbackReason === "PARSE" ||
+        payload.analysis.fallbackReason === "EMPTY"
+          ? payload.analysis.fallbackReason
+          : null;
+
+      const analysis: AnalysisResult = {
+        ...payload.analysis,
+        feedback: {
+          positive: payload.analysis.feedback?.positive ?? [],
+          improvements: payload.analysis.feedback?.improvements ?? [],
+        },
+        keywords: {
+          extracted: payload.analysis.keywords?.extracted ?? [],
+          missing: payload.analysis.keywords?.missing ?? [],
+        },
+        usedFallback: payload.analysis.usedFallback ?? false,
+        fallbackReason: fallbackReasonValue,
+      };
       setAnalyses((current) => [analysis, ...current]);
       setStatus("idle");
-      const matchedSummary =
-        analysis.keywordsMatched.length > 0
-          ? `Matched keywords: ${analysis.keywordsMatched.join(", ")}.`
-          : "No keywords matched this resume.";
+      const matchedSummary = summaryFromAnalysis(analysis);
       void Swal.fire({
         title: "Analysis complete",
         text: matchedSummary,

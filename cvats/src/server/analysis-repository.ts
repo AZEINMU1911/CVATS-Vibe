@@ -1,47 +1,89 @@
-import type { Analysis } from "@prisma/client";
+import type { AnalysisHistory } from "@prisma/client";
 import { PrismaClient } from "@prisma/client";
 
-export interface AnalysisRecord {
+export interface AnalysisHistoryRecord {
   id: string;
   cvId: string;
-  score: number | null;
-  keywordsMatched: string[];
+  userId: string;
+  atsScore: number;
+  feedback: {
+    positive: string[];
+    improvements: string[];
+  };
+  keywords: {
+    extracted: string[];
+    missing: string[];
+  };
+  usedFallback: boolean;
+  fallbackReason: string | null;
   createdAt: string;
-  message?: string | null;
 }
 
-export interface CreateAnalysisInput {
+export interface CreateAnalysisHistoryInput {
   cvId: string;
-  score: number | null;
-  keywordsMatched: string[];
-  message?: string | null;
+  userId: string;
+  atsScore: number;
+  feedback: {
+    positive: string[];
+    improvements: string[];
+  };
+  keywords: {
+    extracted: string[];
+    missing: string[];
+  };
+  usedFallback?: boolean;
+  fallbackReason?: string | null;
 }
 
-export interface AnalysisRepository {
-  create(input: CreateAnalysisInput): Promise<AnalysisRecord>;
-  listByCvId(cvId: string): Promise<AnalysisRecord[]>;
+export interface AnalysisHistoryRepository {
+  create(input: CreateAnalysisHistoryInput): Promise<AnalysisHistoryRecord>;
+  findLatestForCv(cvId: string, userId: string): Promise<AnalysisHistoryRecord | null>;
+  listByCvId(cvId: string, userId: string): Promise<AnalysisHistoryRecord[]>;
   reset?: () => void;
 }
 
 const shouldUseMemory = process.env.NODE_ENV === "test" || !process.env.DATABASE_URL;
 
-const mapAnalysis = (analysis: Analysis): AnalysisRecord => {
-  const insights = (analysis.insights as { keywordsMatched?: unknown }) ?? {};
-  const keywordsMatched = Array.isArray(insights.keywordsMatched)
-    ? (insights.keywordsMatched as string[])
-    : [];
+const toStringList = (value: unknown): string[] => {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => String(item)).filter((item) => item.length > 0);
+};
 
+const mapFeedback = (value: unknown): AnalysisHistoryRecord["feedback"] => {
+  if (typeof value !== "object" || !value) {
+    return { positive: [], improvements: [] };
+  }
+  const record = value as Record<string, unknown>;
   return {
-    id: analysis.id,
-    cvId: analysis.cvId,
-    score: analysis.score,
-    keywordsMatched,
-    createdAt: analysis.createdAt.toISOString(),
-    message: analysis.summary,
+    positive: toStringList(record.positive),
+    improvements: toStringList(record.improvements),
   };
 };
 
-const createPrismaRepository = (): AnalysisRepository => {
+const mapKeywords = (value: unknown): AnalysisHistoryRecord["keywords"] => {
+  if (typeof value !== "object" || !value) {
+    return { extracted: [], missing: [] };
+  }
+  const record = value as Record<string, unknown>;
+  return {
+    extracted: toStringList(record.extracted),
+    missing: toStringList(record.missing),
+  };
+};
+
+const mapHistory = (history: AnalysisHistory): AnalysisHistoryRecord => ({
+  id: history.id,
+  cvId: history.cvId,
+  userId: history.userId,
+  atsScore: history.atsScore,
+  feedback: mapFeedback(history.feedback),
+  keywords: mapKeywords(history.keywords),
+  usedFallback: history.usedFallback,
+  fallbackReason: history.fallbackReason ?? null,
+  createdAt: history.createdAt.toISOString(),
+});
+
+const createPrismaRepository = (): AnalysisHistoryRepository => {
   const prismaGlobal = globalThis as typeof globalThis & { prismaInstance?: PrismaClient };
   if (!prismaGlobal.prismaInstance) {
     prismaGlobal.prismaInstance = new PrismaClient();
@@ -50,56 +92,79 @@ const createPrismaRepository = (): AnalysisRepository => {
 
   return {
     async create(input) {
-      const created = await prisma.analysis.create({
+      const created = await prisma.analysisHistory.create({
         data: {
           cvId: input.cvId,
-          score: input.score,
-          summary: input.message ?? null,
-          insights: {
-            keywordsMatched: input.keywordsMatched,
-          },
+          userId: input.userId,
+          atsScore: input.atsScore,
+          feedback: input.feedback,
+          keywords: input.keywords,
+          usedFallback: input.usedFallback ?? false,
+          fallbackReason: input.fallbackReason ?? null,
         },
       });
-      return mapAnalysis(created);
+      return mapHistory(created);
     },
-    async listByCvId(cvId) {
-      const rows = await prisma.analysis.findMany({
-        where: { cvId },
+    async findLatestForCv(cvId, userId) {
+      const record = await prisma.analysisHistory.findFirst({
+        where: { cvId, userId },
         orderBy: { createdAt: "desc" },
       });
-      return rows.map(mapAnalysis);
+      return record ? mapHistory(record) : null;
+    },
+    async listByCvId(cvId, userId) {
+      const rows = await prisma.analysisHistory.findMany({
+        where: { cvId, userId },
+        orderBy: { createdAt: "desc" },
+      });
+      return rows.map(mapHistory);
     },
   };
 };
 
-const createMemoryRepository = (): AnalysisRepository => {
-  const analyses = new Map<string, AnalysisRecord[]>();
+const createMemoryRepository = (): AnalysisHistoryRepository => {
+  const store = new Map<string, AnalysisHistoryRecord[]>();
   let counter = 0;
 
   return {
     async create(input) {
-      const record: AnalysisRecord = {
+      const entry: AnalysisHistoryRecord = {
         id: `${Date.now()}-${counter++}`,
         cvId: input.cvId,
-        score: input.score,
-        keywordsMatched: [...input.keywordsMatched],
+        userId: input.userId,
+        atsScore: input.atsScore,
+        feedback: {
+          positive: [...input.feedback.positive],
+          improvements: [...input.feedback.improvements],
+        },
+        keywords: {
+          extracted: [...input.keywords.extracted],
+          missing: [...input.keywords.missing],
+        },
+        usedFallback: input.usedFallback ?? false,
+        fallbackReason: input.fallbackReason ?? null,
         createdAt: new Date().toISOString(),
-        message: input.message ?? null,
       };
-      const existing = analyses.get(input.cvId) ?? [];
-      analyses.set(input.cvId, [record, ...existing]);
-      return record;
+      const existing = store.get(input.cvId) ?? [];
+      store.set(input.cvId, [entry, ...existing]);
+      return entry;
     },
-    async listByCvId(cvId) {
-      return analyses.get(cvId) ?? [];
+    async findLatestForCv(cvId, userId) {
+      const current = store.get(cvId);
+      if (!current) return null;
+      return current.find((item) => item.userId === userId) ?? null;
+    },
+    async listByCvId(cvId, userId) {
+      const current = store.get(cvId) ?? [];
+      return current.filter((item) => item.userId === userId);
     },
     reset() {
-      analyses.clear();
+      store.clear();
     },
   };
 };
 
-export const analysisRepository: AnalysisRepository = shouldUseMemory
+export const analysisRepository: AnalysisHistoryRepository = shouldUseMemory
   ? createMemoryRepository()
   : createPrismaRepository();
 

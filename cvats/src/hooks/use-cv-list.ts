@@ -10,6 +10,8 @@ export interface CvListItem {
   mimeType: string;
   uploadedAt: string;
   publicId?: string | null;
+  atsScore?: number | null;
+  analyzedAt?: string | null;
 }
 
 interface FetchResult {
