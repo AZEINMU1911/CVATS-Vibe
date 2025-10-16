@@ -168,8 +168,8 @@ describe("POST /api/analyses", () => {
     expect(extractTextFromBufferMock).toHaveBeenCalled();
   });
 
-  it("falls back with PARSE reason when Gemini returns malformed JSON", async () => {
-    analyzeWithGeminiMock.mockRejectedValueOnce(new GeminiParseError("invalid json"));
+  it("falls back with PARSE reason when Gemini request times out", async () => {
+    analyzeWithGeminiMock.mockRejectedValueOnce(new GeminiParseError("TIMEOUT"));
     const cv = await cvRepository.createForUser(USER_ID, {
       fileName: "sample.pdf",
       fileUrl: "https://example.com/sample.pdf",
@@ -202,6 +202,24 @@ describe("POST /api/analyses", () => {
 
     expect(payload.analysis.usedFallback).toBe(true);
     expect(payload.analysis.fallbackReason).toBe("EMPTY");
+  });
+
+  it("falls back with EMPTY_PROD reason when Gemini signals production empty", async () => {
+    analyzeWithGeminiMock.mockRejectedValueOnce(new GeminiParseError("EMPTY_PROD"));
+    const cv = await cvRepository.createForUser(USER_ID, {
+      fileName: "sample.pdf",
+      fileUrl: "https://example.com/sample.pdf",
+      fileSize: 1024,
+      mimeType: "application/pdf",
+      publicId: null,
+    });
+
+    const response = await POST(createRequest({ cvId: cv.id }));
+    expect(response.status).toBe(201);
+    const payload = (await response.json()) as AnalysisResponseBody;
+
+    expect(payload.analysis.usedFallback).toBe(true);
+    expect(payload.analysis.fallbackReason).toBe("EMPTY_PROD");
   });
 
   it("falls back with SAFETY reason when Gemini rejects safety settings", async () => {
@@ -255,6 +273,7 @@ describe("POST /api/analyses", () => {
 
     const response = await POST(createRequest({ cvId: cv.id }));
     expect(response.status).toBe(413);
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 });
 
