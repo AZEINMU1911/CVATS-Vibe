@@ -15,6 +15,22 @@ import { extractTextFromBuffer } from "@/server/analysis/text-extractor";
 import { scoreKeywords } from "@/server/analysis/score";
 import { checkRateLimit } from "@/server/rate-limit";
 import { getAuthSession } from "@/lib/auth/session";
+import { requireEnv } from "@/server/env";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+const isProduction = process.env.NODE_ENV === "production";
+
+if (isProduction) {
+  requireEnv([
+    "GOOGLE_GEMINI_API_KEY",
+    "GEMINI_MODEL",
+    "CLOUDINARY_CLOUD_NAME",
+    "CLOUDINARY_UPLOAD_PRESET",
+    "DATABASE_URL",
+  ]);
+}
 
 const DEFAULT_KEYWORDS = ["javascript", "react", "node", "typescript", "nextjs"] as const;
 const ANALYSIS_MAX_FILE_MB = Number.parseInt(process.env.ANALYSIS_MAX_FILE_MB ?? "10", 10) || 10;
@@ -26,11 +42,13 @@ const postSchema = z.object({
 });
 
 const logAnalysis = (...values: unknown[]) => {
-  if (process.env.NODE_ENV === "production") return;
+  if (isProduction) return;
   console.log("[analysis]", ...values);
 };
 
-type FallbackReason = "QUOTA" | "PARSE" | "EMPTY" | "SAFETY";
+const hasGeminiKey = (): boolean => Boolean(process.env.GOOGLE_GEMINI_API_KEY?.trim());
+
+type FallbackReason = "QUOTA" | "PARSE" | "EMPTY" | "EMPTY_PROD" | "SAFETY";
 
 interface ApiAnalysisResponse extends GeminiFileAnalysis {
   id: string;
@@ -48,7 +66,13 @@ const mapKeywords = (keywords?: string[]): string[] => {
 };
 
 const asFallbackReason = (value: string | null): FallbackReason | null => {
-  if (value === "QUOTA" || value === "PARSE" || value === "EMPTY" || value === "SAFETY") {
+  if (
+    value === "QUOTA" ||
+    value === "PARSE" ||
+    value === "EMPTY" ||
+    value === "EMPTY_PROD" ||
+    value === "SAFETY"
+  ) {
     return value;
   }
   return null;
@@ -124,6 +148,14 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "CV not found" }, { status: 404 });
   }
 
+  if (cv.fileSize > MAX_FILE_BYTES) {
+    logAnalysis("Stored CV exceeds analysis size limit", { cvId, size: cv.fileSize });
+    return NextResponse.json(
+      { error: `File exceeds ${ANALYSIS_MAX_FILE_MB}MB analysis limit.` },
+      { status: 413 },
+    );
+  }
+
   const keywordList = mapKeywords(keywords);
   let fileDownload: { buffer: Buffer; mime: string | null };
   try {
@@ -146,7 +178,7 @@ export async function POST(request: Request) {
   let geminiResult: GeminiFileAnalysis | null = null;
   let fallbackReason: FallbackReason | null = null;
 
-  if (process.env.GOOGLE_GEMINI_API_KEY) {
+  if (hasGeminiKey()) {
     try {
       geminiResult = await analyzeWithGeminiFile({ file: fileDownload.buffer, mime: mimeType });
       logAnalysis("Gemini response parsed", { cvId, atsScore: geminiResult.atsScore });
@@ -155,14 +187,16 @@ export async function POST(request: Request) {
         fallbackReason = "QUOTA";
         logAnalysis("Gemini quota fallback", { cvId, retryAt: error.retryAt ?? null });
       } else if (error instanceof GeminiParseError) {
-        if (error.message === "EMPTY_OR_NON_JSON") {
+        if (error.code === "EMPTY_OR_NON_JSON") {
           fallbackReason = "EMPTY";
-        } else if (error.message === "SAFETY_REJECTION") {
+        } else if (error.code === "EMPTY_PROD") {
+          fallbackReason = "EMPTY_PROD";
+        } else if (error.code === "SAFETY_REJECTION") {
           fallbackReason = "SAFETY";
         } else {
           fallbackReason = "PARSE";
         }
-        logAnalysis("Gemini parse fallback", { cvId, message: error.message });
+        logAnalysis("Gemini parse fallback", { cvId, code: error.code });
       } else {
         console.error("ANALYSIS_GEMINI_ERROR", { message: (error as Error)?.message ?? "unknown" });
         fallbackReason = "PARSE";

@@ -213,7 +213,7 @@ describe("analyzeWithGeminiFile", () => {
 
     await expect(
       analyzeWithGeminiFile({ file: Buffer.from("resume"), mime: "application/pdf" }),
-    ).rejects.toHaveProperty("message", "EMPTY_OR_NON_JSON");
+    ).rejects.toHaveProperty("code", "EMPTY_OR_NON_JSON");
     expect(uploadFileMock).toHaveBeenCalled();
   });
 

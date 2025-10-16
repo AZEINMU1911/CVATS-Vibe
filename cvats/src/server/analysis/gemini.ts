@@ -36,9 +36,15 @@ export class GeminiQuotaError extends Error {
   }
 }
 
+export type GeminiParseErrorCode =
+  | "EMPTY_OR_NON_JSON"
+  | "EMPTY_PROD"
+  | "SAFETY_REJECTION"
+  | "TIMEOUT";
+
 export class GeminiParseError extends Error {
-  constructor(message: string) {
-    super(message);
+  constructor(public readonly code: GeminiParseErrorCode) {
+    super(code);
     this.name = "GeminiParseError";
   }
 }
@@ -46,10 +52,12 @@ export class GeminiParseError extends Error {
 const DEFAULT_MODEL = process.env.GEMINI_MODEL ?? "gemini-2.5-flash";
 const DEFAULT_MAX_TOKENS = Number.parseInt(process.env.GEMINI_MAX_TOKENS ?? "1024", 10) || 1024;
 const MAX_BACKOFF_MS = Number.parseInt(process.env.GEMINI_MAX_BACKOFF_MS ?? "4000", 10) || 4000;
+const PROD_ANALYSIS_TIMEOUT_MS = 7_000;
 const PROMPT_JSON_ONLY =
   "You are an applicant tracking system reviewer. Respond in STRICT JSON only (no markdown), matching this schema:\n{\n  \"atsScore\": number 0-100,\n  \"feedback\": { \"positive\": string[], \"improvements\": string[] },\n  \"keywords\": { \"extracted\": string[], \"missing\": string[] }\n}\nKeep arrays concise and free of empty strings.";
 
 const isDev = process.env.NODE_ENV === "development";
+const isProd = process.env.NODE_ENV === "production";
 const devLog = (event: string, payload?: Record<string, unknown>) => {
   if (!isDev) return;
   if (payload) {
@@ -130,31 +138,58 @@ type AttemptOutcome = {
 const runModelRequest = async (
   model: GenerativeModel,
   request: GenerateContentRequest,
+  timeoutMs?: number,
 ): Promise<AttemptOutcome> => {
-  try {
-    const result = await model.generateContent(request);
-    const candidate = result.response?.candidates?.[0];
-    const finishReason = candidate?.finishReason ?? "UNKNOWN";
-    const parts = candidate?.content?.parts ?? [];
-    const text = parts
-      .map((part) => (typeof part.text === "string" ? part.text : ""))
-      .join("")
-      .trim();
-    const promptFeedback = result.response?.promptFeedback;
-    devLog("GEMINI_ATTEMPT_FINISH", { finishReason, promptFeedback });
-    return { text, finishReason, promptFeedback };
-  } catch (error) {
-    const status = getStatus(error);
-    if (status === 429) {
-      const retryMs = Math.min(extractRetryMs(error) ?? 1000, MAX_BACKOFF_MS);
-      await sleep(retryMs);
-      throw new GeminiQuotaError("Gemini quota exceeded", Date.now() + retryMs);
+  const execution = (async () => {
+    try {
+      const result = await model.generateContent(request);
+      const candidate = result.response?.candidates?.[0];
+      const finishReason = candidate?.finishReason ?? "UNKNOWN";
+      const parts = candidate?.content?.parts ?? [];
+      const text = parts
+        .map((part) => (typeof part.text === "string" ? part.text : ""))
+        .join("")
+        .trim();
+      const promptFeedback = result.response?.promptFeedback;
+      devLog("GEMINI_ATTEMPT_FINISH", { finishReason, promptFeedback });
+      return { text, finishReason, promptFeedback };
+    } catch (error) {
+      const status = getStatus(error);
+      if (status === 429) {
+        const retryMs = Math.min(extractRetryMs(error) ?? 1000, MAX_BACKOFF_MS);
+        await sleep(retryMs);
+        throw new GeminiQuotaError("Gemini quota exceeded", Date.now() + retryMs);
+      }
+      if (status === 400) {
+        console.warn("[gemini] safety setting issue", (error as Error)?.message ?? "");
+        throw new GeminiParseError("SAFETY_REJECTION");
+      }
+      throw error;
     }
-    if (status === 400) {
-      console.warn("[gemini] safety setting issue", (error as Error)?.message ?? "");
-      throw new GeminiParseError("SAFETY_REJECTION");
+  })();
+
+  if (!timeoutMs || timeoutMs <= 0) {
+    return execution;
+  }
+
+  let timer: NodeJS.Timeout | null = null;
+  const timeoutPromise = new Promise<AttemptOutcome>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new GeminiParseError("TIMEOUT"));
+    }, timeoutMs);
+  });
+
+  try {
+    return (await Promise.race([execution, timeoutPromise])) as AttemptOutcome;
+  } catch (error) {
+    if (error instanceof GeminiParseError && error.code === "TIMEOUT") {
+      void execution.catch(() => undefined);
     }
     throw error;
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
   }
 };
 
@@ -258,6 +293,7 @@ const ensureFileActive = async (
 const runFileUploadAttempt = async (
   model: GenerativeModel,
   input: GeminiFileInput,
+  timeoutMs?: number,
 ): Promise<AttemptOutcome> => {
   const manager = getFileManager();
   const upload = await manager.uploadFile(input.file, {
@@ -274,7 +310,7 @@ const runFileUploadAttempt = async (
 
   try {
     const request: GenerateContentRequest = { contents: buildFileContents(fileUri, input.mime) };
-    return await runModelRequest(model, request);
+    return await runModelRequest(model, request, timeoutMs);
   } finally {
     void manager.deleteFile(fileName).catch(() => undefined);
   }
@@ -282,8 +318,64 @@ const runFileUploadAttempt = async (
 
 export const analyzeWithGeminiFile = async (input: GeminiFileInput): Promise<GeminiFileAnalysis> => {
   const model = getModel();
-  const inlineRequest: GenerateContentRequest = { contents: buildInlineContents(input.file, input.mime) };
-  const inlineOutcome = await runModelRequest(model, inlineRequest);
+  const normalizedMime = input.mime?.trim() || "application/pdf";
+  const fileSize = input.file.byteLength;
+  const deadline = isProd ? Date.now() + PROD_ANALYSIS_TIMEOUT_MS : null;
+
+  const ensureTimeRemaining = (): number | undefined => {
+    if (!deadline) {
+      return undefined;
+    }
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      throw new GeminiParseError("TIMEOUT");
+    }
+    return remaining;
+  };
+
+  const logProdAttemptStart = (path: "inlineData" | "fileAPI", attempt: number) => {
+    if (!isProd) {
+      return;
+    }
+    console.warn("[gemini] prod run", {
+      path,
+      model: DEFAULT_MODEL,
+      mime: normalizedMime,
+      size: fileSize,
+      attempt,
+    });
+  };
+
+  const logProdAttemptOutcome = (
+    path: "inlineData" | "fileAPI",
+    attempt: number,
+    outcome: AttemptOutcome,
+  ) => {
+    if (!isProd) {
+      return;
+    }
+    const promptFeedbackRecord =
+      typeof outcome.promptFeedback === "object" && outcome.promptFeedback
+        ? (outcome.promptFeedback as { blockReason?: unknown })
+        : null;
+    const promptFeedback =
+      promptFeedbackRecord && "blockReason" in promptFeedbackRecord
+        ? (promptFeedbackRecord.blockReason as string | null | undefined) ?? null
+        : null;
+    console.warn("[gemini] prod outcome", {
+      finishReason: outcome.finishReason,
+      hasText: outcome.text.trim().length > 0,
+      promptFeedback,
+    });
+  };
+
+  const inlineRequest: GenerateContentRequest = {
+    contents: buildInlineContents(input.file, normalizedMime),
+  };
+  const inlineTimeout = ensureTimeRemaining();
+  logProdAttemptStart("inlineData", 1);
+  const inlineOutcome = await runModelRequest(model, inlineRequest, inlineTimeout);
+  logProdAttemptOutcome("inlineData", 1, inlineOutcome);
 
   if (!shouldRetry(inlineOutcome)) {
     if (isDev) console.log("GEMINI_RAW_RESPONSE", inlineOutcome.text);
@@ -295,7 +387,11 @@ export const analyzeWithGeminiFile = async (input: GeminiFileInput): Promise<Gem
     promptFeedback: inlineOutcome.promptFeedback,
   });
 
-  const fileOutcome = await runFileUploadAttempt(model, input);
+  const fileTimeout = ensureTimeRemaining();
+  logProdAttemptStart("fileAPI", 2);
+  const fileOutcome = await runFileUploadAttempt(model, { ...input, mime: normalizedMime }, fileTimeout);
+  logProdAttemptOutcome("fileAPI", 2, fileOutcome);
+
   if (!shouldRetry(fileOutcome)) {
     if (isDev) console.log("GEMINI_RAW_RESPONSE", fileOutcome.text);
     return parseGeminiJson(fileOutcome.text);
@@ -306,7 +402,7 @@ export const analyzeWithGeminiFile = async (input: GeminiFileInput): Promise<Gem
     promptFeedback: fileOutcome.promptFeedback,
   });
 
-  throw new GeminiParseError("EMPTY_OR_NON_JSON");
+  throw new GeminiParseError(isProd ? "EMPTY_PROD" : "EMPTY_OR_NON_JSON");
 };
 
 export { parseGeminiJson };

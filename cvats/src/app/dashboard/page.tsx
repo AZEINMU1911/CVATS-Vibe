@@ -33,6 +33,7 @@ interface UploadFormProps {
   maxFileLabel: string;
   selectedFileName: string | null;
   selectedFileSize: number | null;
+  uploadsEnabled: boolean;
 }
 
 interface CvListProps {
@@ -142,8 +143,11 @@ const UploadControls = ({
   selectedFileName,
   selectedFileSize,
   maxFileLabel,
+  uploadsEnabled,
   children,
-}: Pick<UploadFormProps, "status" | "maxFileLabel" | "selectedFileName" | "selectedFileSize"> & { children: ReactNode }) => (
+}: Pick<UploadFormProps, "status" | "maxFileLabel" | "selectedFileName" | "selectedFileSize" | "uploadsEnabled"> & {
+  children: ReactNode;
+}) => (
   <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
     <p className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-300">
       <span className="inline-flex h-2 w-2 rounded-full bg-slate-400" aria-hidden />
@@ -161,7 +165,12 @@ const UploadControls = ({
       <button
         type="submit"
         className="inline-flex min-w-[140px] items-center justify-center rounded-full bg-blue-600 px-5 py-2 text-sm font-semibold text-white transition hover:bg-blue-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:bg-blue-300 dark:bg-blue-500 dark:hover:bg-blue-400"
-        disabled={status === "uploading" || !selectedFileName}
+        disabled={status === "uploading" || !selectedFileName || !uploadsEnabled}
+        title={
+          uploadsEnabled
+            ? undefined
+            : "Cloudinary uploads disabled. Configure CLOUDINARY_CLOUD_NAME and CLOUDINARY_UPLOAD_PRESET."
+        }
       >
         {status === "uploading" ? "Uploading…" : "Save to CVs"}
       </button>
@@ -195,6 +204,7 @@ const UploadForm = ({
   maxFileLabel,
   selectedFileName,
   selectedFileSize,
+  uploadsEnabled,
 }: UploadFormProps) => (
   <UploadFormSection>
     <form className="flex flex-col gap-5" onSubmit={onSubmit}>
@@ -211,12 +221,15 @@ const UploadForm = ({
         selectedFileName={selectedFileName}
         selectedFileSize={selectedFileSize ?? null}
         maxFileLabel={maxFileLabel}
+        uploadsEnabled={uploadsEnabled}
       >
-        {status === "uploading"
-          ? "Uploading to Cloudinary…"
-          : selectedFileName
-            ? "All set — click save to persist metadata."
-            : "Ready when you are — PDFs and DOCX files only."}
+        {!uploadsEnabled
+          ? "Cloudinary uploads are disabled until environment variables are configured."
+          : status === "uploading"
+            ? "Uploading to Cloudinary…"
+            : selectedFileName
+              ? "All set — click save to persist metadata."
+              : "Ready when you are — PDFs and DOCX files only."}
       </UploadControls>
       <UploadStatusBanner statusMessage={statusMessage} hasError={hasError} />
     </form>
@@ -565,7 +578,14 @@ export default function DashboardPage() {
     null,
   );
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const { status, error: uploadError, upload, reset } = useUploadToCloudinary();
+  const {
+    status,
+    error: uploadError,
+    upload,
+    reset,
+    isConfigured,
+    configError,
+  } = useUploadToCloudinary();
   const stats = useMemo(() => {
     const totalBytes = cvs.reduce((acc, cv) => acc + cv.fileSize, 0);
     return {
@@ -619,6 +639,14 @@ export default function DashboardPage() {
         return;
       }
 
+      if (!isConfigured) {
+        const message =
+          configError ??
+          "Cloudinary uploads are disabled. Configure CLOUDINARY_CLOUD_NAME and CLOUDINARY_UPLOAD_PRESET.";
+        setClientError(message);
+        return;
+      }
+
       try {
         const cloudinary = await upload(file);
         const response = await fetch("/api/uploads", {
@@ -660,14 +688,15 @@ export default function DashboardPage() {
         setClientError(message);
       }
     },
-    [refresh, upload],
+    [configError, isConfigured, refresh, upload],
   );
 
-  const statusMessage = useMemo(
-    () => statusLabel(status, successMessage, clientError ?? uploadError),
-    [status, successMessage, clientError, uploadError],
-  );
+  const statusMessage = useMemo(() => {
+    const errorMessage = configError ?? clientError ?? uploadError;
+    return statusLabel(status, successMessage, errorMessage);
+  }, [configError, status, successMessage, clientError, uploadError]);
 
+  const statusHasError = Boolean(configError ?? clientError ?? uploadError);
   const maxFileLabel = process.env.NEXT_PUBLIC_MAX_FILE_MB ?? "8";
   const selectedFileName = selectedFileInfo?.name ?? null;
   const selectedFileSize = selectedFileInfo?.size ?? null;
@@ -730,13 +759,14 @@ export default function DashboardPage() {
         <UploadForm
           status={status}
           statusMessage={statusMessage}
-          hasError={Boolean(clientError ?? uploadError)}
+          hasError={statusHasError}
           onSubmit={handleSubmit}
           onFileChange={handleFileChange}
           inputRef={fileInputRef}
           maxFileLabel={maxFileLabel}
           selectedFileName={selectedFileName}
           selectedFileSize={selectedFileSize}
+          uploadsEnabled={isConfigured}
         />
 
       <CvList

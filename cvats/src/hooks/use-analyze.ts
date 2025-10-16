@@ -15,7 +15,7 @@ export interface AnalysisResult {
   };
   createdAt: string;
   usedFallback: boolean;
-  fallbackReason: "QUOTA" | "PARSE" | "EMPTY" | null;
+  fallbackReason: "QUOTA" | "PARSE" | "EMPTY" | "EMPTY_PROD" | "SAFETY" | null;
 }
 
 export type AnalysisStatus = "idle" | "running" | "error";
@@ -85,7 +85,9 @@ export const useAnalyze = (cvId: string) => {
       const fallbackReasonValue =
         payload.analysis.fallbackReason === "QUOTA" ||
         payload.analysis.fallbackReason === "PARSE" ||
-        payload.analysis.fallbackReason === "EMPTY"
+        payload.analysis.fallbackReason === "EMPTY" ||
+        payload.analysis.fallbackReason === "EMPTY_PROD" ||
+        payload.analysis.fallbackReason === "SAFETY"
           ? payload.analysis.fallbackReason
           : null;
 

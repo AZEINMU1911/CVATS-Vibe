@@ -9,39 +9,28 @@ export interface CloudinaryUploadResult {
   format?: string;
 }
 
-const FALLBACK_ENV: Record<string, string> = {
-  NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME: "demo",
-  NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET: "unsigned",
-};
-
-const getEnvOrThrow = (name: string, value: string | undefined): string => {
-  if (value && value.length > 0) {
-    return value;
-  }
-
-  const fallback = FALLBACK_ENV[name];
-  if (fallback) {
-    return fallback;
-  }
-
-  throw new Error(`${name} is not defined. Configure it in your environment.`);
-};
-
 export const useUploadToCloudinary = () => {
-  const [status, setStatus] = useState<UploadStatus>("idle");
-  const [error, setError] = useState<string | null>(null);
+  const cloudName = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME?.trim() ?? "";
+  const uploadPreset = process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET?.trim() ?? "";
+  const isConfigured = cloudName.length > 0 && uploadPreset.length > 0;
+  const configurationError = isConfigured
+    ? null
+    : "Cloudinary uploads are disabled. Configure CLOUDINARY_CLOUD_NAME and CLOUDINARY_UPLOAD_PRESET.";
 
-  const cloudName = getEnvOrThrow(
-    "NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME",
-    process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME,
-  );
-  const uploadPreset = getEnvOrThrow(
-    "NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET",
-    process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET,
-  );
+  const [status, setStatus] = useState<UploadStatus>(isConfigured ? "idle" : "error");
+  const [error, setError] = useState<string | null>(configurationError);
 
   const upload = useCallback(
     async (file: File): Promise<CloudinaryUploadResult> => {
+      if (!isConfigured) {
+        const message =
+          configurationError ??
+          "Cloudinary uploads are disabled. Configure CLOUDINARY_CLOUD_NAME and CLOUDINARY_UPLOAD_PRESET.";
+        setStatus("error");
+        setError(message);
+        throw new Error(message);
+      }
+
       setError(null);
       setStatus("uploading");
       const formData = new FormData();
@@ -90,18 +79,20 @@ export const useUploadToCloudinary = () => {
 
       return result;
     },
-    [cloudName, uploadPreset],
+    [cloudName, uploadPreset, configurationError, isConfigured],
   );
 
   const reset = useCallback(() => {
-    setStatus("idle");
-    setError(null);
-  }, []);
+    setStatus(isConfigured ? "idle" : "error");
+    setError(configurationError);
+  }, [configurationError, isConfigured]);
 
   return {
     status,
     error,
     upload,
     reset,
+    isConfigured,
+    configError: configurationError,
   };
 };
