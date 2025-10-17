@@ -71,11 +71,14 @@ describe("api/uploads route", () => {
     const payload = (await response.json()) as {
       cv?: Record<string, unknown>;
       transient?: { __bytes?: string; mimeType?: string };
+      cvId?: string;
     };
     expect(payload.cv).toBeDefined();
     expect(payload.transient?.__bytes).toBeDefined();
     expect(payload.transient?.__bytes?.length).toBeGreaterThan(0);
     expect(payload.transient?.mimeType).toBe("application/pdf");
+    expect(payload.cvId).toBeTypeOf("string");
+    expect(payload.cvId).toBe(payload.cv?.id);
 
     expect(payload.cv).toMatchObject({
       fileName: "resume.pdf",

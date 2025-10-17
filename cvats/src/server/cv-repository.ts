@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import type { CV } from "@prisma/client";
-import { PrismaClient } from "@prisma/client";
+import type { CV, PrismaClient } from "@prisma/client";
+import { createPrismaClient } from "@/server/prisma-client";
 
 export interface CvRecord {
   id: string;
@@ -50,7 +50,10 @@ export interface CvRepository {
 }
 
 const shouldUseMemory =
-  process.env.NODE_ENV === "test" || !process.env.DATABASE_URL;
+  process.env.NODE_ENV === "test" ||
+  !process.env.DATABASE_URL ||
+  (process.env.PRISMA_FORCE_MEMORY ?? "").toLowerCase() === "1" ||
+  (process.env.PRISMA_FORCE_MEMORY ?? "").toLowerCase() === "true";
 
 type CvWithSecureUrl = CV & { secureUrl?: string | null };
 
@@ -88,7 +91,7 @@ const mapCv = (record: CV): CvRecord => {
 const createPrismaRepository = (): CvRepository => {
   const prismaGlobal = globalThis as typeof globalThis & { prismaInstance?: PrismaClient };
   if (!prismaGlobal.prismaInstance) {
-    prismaGlobal.prismaInstance = new PrismaClient();
+    prismaGlobal.prismaInstance = createPrismaClient();
   }
   const prisma = prismaGlobal.prismaInstance;
 

@@ -44,7 +44,22 @@ export const signedRawUrl = (publicId: string, version?: number | string) => {
       }
       return template;
     }
-    return overrideBase;
+    try {
+      const url = new URL(overrideBase);
+      url.searchParams.set("publicId", publicId);
+      if (version !== undefined && version !== null) {
+        url.searchParams.set("version", String(version));
+      }
+      return url.toString();
+    } catch {
+      const query = new URLSearchParams({ publicId });
+      if (version !== undefined && version !== null) {
+        query.set("version", String(version));
+      }
+      const hasQuery = overrideBase.includes("?");
+      const joiner = hasQuery ? "&" : "?";
+      return `${overrideBase}${joiner}${query.toString()}`;
+    }
   }
   const cld = initCloudinary();
   const options: Record<string, unknown> = {
