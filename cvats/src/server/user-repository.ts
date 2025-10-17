@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
-import type { User } from "@prisma/client";
-import { PrismaClient } from "@prisma/client";
+import type { PrismaClient, User } from "@prisma/client";
+import { createPrismaClient } from "@/server/prisma-client";
 
 export interface UserRecord {
   id: string;
@@ -22,7 +22,11 @@ export interface UserRepository {
   reset?: () => void;
 }
 
-const shouldUseMemory = process.env.NODE_ENV === "test" || !process.env.DATABASE_URL;
+const shouldUseMemory =
+  process.env.NODE_ENV === "test" ||
+  !process.env.DATABASE_URL ||
+  (process.env.PRISMA_FORCE_MEMORY ?? "").toLowerCase() === "1" ||
+  (process.env.PRISMA_FORCE_MEMORY ?? "").toLowerCase() === "true";
 
 const mapUser = (user: User): UserRecord => ({
   id: user.id,
@@ -34,7 +38,7 @@ const mapUser = (user: User): UserRecord => ({
 const createPrismaRepository = (): UserRepository => {
   const prismaGlobal = globalThis as typeof globalThis & { prismaInstance?: PrismaClient };
   if (!prismaGlobal.prismaInstance) {
-    prismaGlobal.prismaInstance = new PrismaClient();
+    prismaGlobal.prismaInstance = createPrismaClient();
   }
   const prisma = prismaGlobal.prismaInstance;
 

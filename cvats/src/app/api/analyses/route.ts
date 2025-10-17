@@ -2,10 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { cvRepository } from "@/server/cv-repository";
 import type { CvRecord } from "@/server/cv-repository";
-import {
-  analysisRepository,
-  type AnalysisHistoryRecord,
-} from "@/server/analysis-repository";
+import { analysisRepository, type AnalysisRecord } from "@/server/analysis-repository";
 import {
   analyzeWithGeminiFile,
   GeminiParseError,
@@ -83,7 +80,7 @@ const asFallbackReason = (value: string | null): FallbackReason | null => {
   return null;
 };
 
-const toApiResponse = (record: AnalysisHistoryRecord): ApiAnalysisResponse => ({
+const toApiResponse = (record: AnalysisRecord): ApiAnalysisResponse => ({
   id: record.id,
   cvId: record.cvId,
   atsScore: record.atsScore,
@@ -270,6 +267,14 @@ export async function POST(request: Request) {
         finalUrl = signedUrl;
         const authHead = await headForCloudinary(signedUrl);
         console.log(`[analysis] cld auth HEAD -> ${authHead.status}`);
+        if (!authHead.ok) {
+          console.error("ANALYSIS_CLOUDINARY_AUTH_HEAD_FAILED", {
+            cvId,
+            status: authHead.status,
+            url: signedUrl,
+          });
+          return NextResponse.json({ error: "CLOUDINARY_FETCH_FAILED" }, { status: 502 });
+        }
         if (authHead.ok && authHead.contentLength && authHead.contentLength > 0) {
           remoteSize = authHead.contentLength;
         } else {
@@ -283,7 +288,7 @@ export async function POST(request: Request) {
           url: downloadUrl,
           detail,
         });
-        return NextResponse.json({ error: "CLOUDINARY_FETCH_FAILED", detail }, { status: 502 });
+        return NextResponse.json({ error: "CLOUDINARY_FETCH_FAILED" }, { status: 502 });
       }
     } else {
       logAnalysis("Cloudinary HEAD ok", { cvId, url: downloadUrl, remoteSize });

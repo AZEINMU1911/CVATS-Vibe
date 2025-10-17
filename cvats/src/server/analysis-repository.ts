@@ -1,7 +1,7 @@
-import type { AnalysisHistory } from "@prisma/client";
-import { PrismaClient } from "@prisma/client";
+import type { PrismaClient } from "@prisma/client";
+import { createPrismaClient } from "@/server/prisma-client";
 
-export interface AnalysisHistoryRecord {
+export interface AnalysisRecord {
   id: string;
   cvId: string;
   userId: string;
@@ -19,7 +19,7 @@ export interface AnalysisHistoryRecord {
   createdAt: string;
 }
 
-export interface CreateAnalysisHistoryInput {
+export interface CreateAnalysisInput {
   cvId: string;
   userId: string;
   atsScore: number;
@@ -35,21 +35,37 @@ export interface CreateAnalysisHistoryInput {
   fallbackReason?: string | null;
 }
 
-export interface AnalysisHistoryRepository {
-  create(input: CreateAnalysisHistoryInput): Promise<AnalysisHistoryRecord>;
-  findLatestForCv(cvId: string, userId: string): Promise<AnalysisHistoryRecord | null>;
-  listByCvId(cvId: string, userId: string): Promise<AnalysisHistoryRecord[]>;
+export interface AnalysisRepository {
+  create(input: CreateAnalysisInput): Promise<AnalysisRecord>;
+  findLatestForCv(cvId: string, userId: string): Promise<AnalysisRecord | null>;
+  listByCvId(cvId: string, userId: string): Promise<AnalysisRecord[]>;
   reset?: () => void;
 }
 
-const shouldUseMemory = process.env.NODE_ENV === "test" || !process.env.DATABASE_URL;
+interface PrismaAnalysisEntity {
+  id: string;
+  cvId: string;
+  userId: string;
+  atsScore: number;
+  feedback: unknown;
+  keywords: unknown;
+  usedFallback: boolean;
+  fallbackReason: string | null;
+  createdAt: Date;
+}
+
+const shouldUseMemory =
+  process.env.NODE_ENV === "test" ||
+  !process.env.DATABASE_URL ||
+  (process.env.PRISMA_FORCE_MEMORY ?? "").toLowerCase() === "1" ||
+  (process.env.PRISMA_FORCE_MEMORY ?? "").toLowerCase() === "true";
 
 const toStringList = (value: unknown): string[] => {
   if (!Array.isArray(value)) return [];
   return value.map((item) => String(item)).filter((item) => item.length > 0);
 };
 
-const mapFeedback = (value: unknown): AnalysisHistoryRecord["feedback"] => {
+const mapFeedback = (value: unknown): AnalysisRecord["feedback"] => {
   if (typeof value !== "object" || !value) {
     return { positive: [], improvements: [] };
   }
@@ -60,7 +76,7 @@ const mapFeedback = (value: unknown): AnalysisHistoryRecord["feedback"] => {
   };
 };
 
-const mapKeywords = (value: unknown): AnalysisHistoryRecord["keywords"] => {
+const mapKeywords = (value: unknown): AnalysisRecord["keywords"] => {
   if (typeof value !== "object" || !value) {
     return { extracted: [], missing: [] };
   }
@@ -71,28 +87,28 @@ const mapKeywords = (value: unknown): AnalysisHistoryRecord["keywords"] => {
   };
 };
 
-const mapHistory = (history: AnalysisHistory): AnalysisHistoryRecord => ({
-  id: history.id,
-  cvId: history.cvId,
-  userId: history.userId,
-  atsScore: history.atsScore,
-  feedback: mapFeedback(history.feedback),
-  keywords: mapKeywords(history.keywords),
-  usedFallback: history.usedFallback,
-  fallbackReason: history.fallbackReason ?? null,
-  createdAt: history.createdAt.toISOString(),
+const mapAnalysis = (analysis: PrismaAnalysisEntity): AnalysisRecord => ({
+  id: analysis.id,
+  cvId: analysis.cvId,
+  userId: analysis.userId,
+  atsScore: analysis.atsScore,
+  feedback: mapFeedback(analysis.feedback),
+  keywords: mapKeywords(analysis.keywords),
+  usedFallback: analysis.usedFallback,
+  fallbackReason: analysis.fallbackReason ?? null,
+  createdAt: analysis.createdAt.toISOString(),
 });
 
-const createPrismaRepository = (): AnalysisHistoryRepository => {
+const createPrismaRepository = (): AnalysisRepository => {
   const prismaGlobal = globalThis as typeof globalThis & { prismaInstance?: PrismaClient };
   if (!prismaGlobal.prismaInstance) {
-    prismaGlobal.prismaInstance = new PrismaClient();
+    prismaGlobal.prismaInstance = createPrismaClient();
   }
   const prisma = prismaGlobal.prismaInstance;
 
   return {
     async create(input) {
-      const created = await prisma.analysisHistory.create({
+      const created = (await prisma.analysisHistory.create({
         data: {
           cvId: input.cvId,
           userId: input.userId,
@@ -102,33 +118,33 @@ const createPrismaRepository = (): AnalysisHistoryRepository => {
           usedFallback: input.usedFallback ?? false,
           fallbackReason: input.fallbackReason ?? null,
         },
-      });
-      return mapHistory(created);
+      })) as unknown as PrismaAnalysisEntity;
+      return mapAnalysis(created);
     },
     async findLatestForCv(cvId, userId) {
-      const record = await prisma.analysisHistory.findFirst({
+      const record = (await prisma.analysisHistory.findFirst({
         where: { cvId, userId },
         orderBy: { createdAt: "desc" },
-      });
-      return record ? mapHistory(record) : null;
+      })) as unknown as PrismaAnalysisEntity | null;
+      return record ? mapAnalysis(record) : null;
     },
     async listByCvId(cvId, userId) {
-      const rows = await prisma.analysisHistory.findMany({
+      const rows = (await prisma.analysisHistory.findMany({
         where: { cvId, userId },
         orderBy: { createdAt: "desc" },
-      });
-      return rows.map(mapHistory);
+      })) as unknown as PrismaAnalysisEntity[];
+      return rows.map(mapAnalysis);
     },
   };
 };
 
-const createMemoryRepository = (): AnalysisHistoryRepository => {
-  const store = new Map<string, AnalysisHistoryRecord[]>();
+const createMemoryRepository = (): AnalysisRepository => {
+  const store = new Map<string, AnalysisRecord[]>();
   let counter = 0;
 
   return {
     async create(input) {
-      const entry: AnalysisHistoryRecord = {
+      const entry: AnalysisRecord = {
         id: `${Date.now()}-${counter++}`,
         cvId: input.cvId,
         userId: input.userId,
@@ -164,7 +180,7 @@ const createMemoryRepository = (): AnalysisHistoryRepository => {
   };
 };
 
-export const analysisRepository: AnalysisHistoryRepository = shouldUseMemory
+export const analysisRepository: AnalysisRepository = shouldUseMemory
   ? createMemoryRepository()
   : createPrismaRepository();
 
