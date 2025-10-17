@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
 import Swal from "sweetalert2";
+import type { InlineAnalysisPayload } from "@/types/analysis";
 
 export interface AnalysisResult {
   id: string;
@@ -54,9 +55,20 @@ export const useAnalyze = (cvId: string) => {
   const [analyses, setAnalyses] = useState<AnalysisResult[]>([]);
 
   const analyze = useCallback(
-    async (keywords?: string[]) => {
+    async (options?: { keywords?: string[]; inline?: InlineAnalysisPayload | null }) => {
       setStatus("running");
       setError(null);
+
+      const requestBody: Record<string, unknown> = { cvId };
+      if (options?.keywords && options.keywords.length > 0) {
+        requestBody.keywords = options.keywords;
+      }
+      if (options?.inline && options.inline.bytes.length > 0) {
+        requestBody.__bytes = options.inline.bytes;
+        if (options.inline.mimeType && options.inline.mimeType.length > 0) {
+          requestBody.mimeType = options.inline.mimeType;
+        }
+      }
 
       const response = await fetch("/api/analyses", {
         method: "POST",
@@ -64,44 +76,44 @@ export const useAnalyze = (cvId: string) => {
           "Content-Type": "application/json",
         },
         credentials: "include",
-        body: JSON.stringify({ cvId, keywords }),
+        body: JSON.stringify(requestBody),
       }).catch(() => null);
 
       if (!response) {
         setStatus("error");
         setError("Failed to reach analysis service.");
-        return;
+        return false;
       }
 
-      const payload = await parseResponse(response);
-      if (!response.ok || !payload.analysis) {
+      const responsePayload = await parseResponse(response);
+      if (!response.ok || !responsePayload.analysis) {
         setStatus("error");
-        setError(payload.error ?? "Analysis failed.");
-        return;
+        setError(responsePayload.error ?? "Analysis failed.");
+        return false;
       }
 
-      console.log("ANALYZE_RESPONSE", payload.analysis);
+      console.log("ANALYZE_RESPONSE", responsePayload.analysis);
 
       const fallbackReasonValue =
-        payload.analysis.fallbackReason === "QUOTA" ||
-        payload.analysis.fallbackReason === "PARSE" ||
-        payload.analysis.fallbackReason === "EMPTY" ||
-        payload.analysis.fallbackReason === "EMPTY_PROD" ||
-        payload.analysis.fallbackReason === "SAFETY"
-          ? payload.analysis.fallbackReason
+        responsePayload.analysis.fallbackReason === "QUOTA" ||
+        responsePayload.analysis.fallbackReason === "PARSE" ||
+        responsePayload.analysis.fallbackReason === "EMPTY" ||
+        responsePayload.analysis.fallbackReason === "EMPTY_PROD" ||
+        responsePayload.analysis.fallbackReason === "SAFETY"
+          ? responsePayload.analysis.fallbackReason
           : null;
 
       const analysis: AnalysisResult = {
-        ...payload.analysis,
+        ...responsePayload.analysis,
         feedback: {
-          positive: payload.analysis.feedback?.positive ?? [],
-          improvements: payload.analysis.feedback?.improvements ?? [],
+          positive: responsePayload.analysis.feedback?.positive ?? [],
+          improvements: responsePayload.analysis.feedback?.improvements ?? [],
         },
         keywords: {
-          extracted: payload.analysis.keywords?.extracted ?? [],
-          missing: payload.analysis.keywords?.missing ?? [],
+          extracted: responsePayload.analysis.keywords?.extracted ?? [],
+          missing: responsePayload.analysis.keywords?.missing ?? [],
         },
-        usedFallback: payload.analysis.usedFallback ?? false,
+        usedFallback: responsePayload.analysis.usedFallback ?? false,
         fallbackReason: fallbackReasonValue,
       };
       setAnalyses((current) => [analysis, ...current]);
@@ -115,6 +127,7 @@ export const useAnalyze = (cvId: string) => {
         timer: 1500,
         showConfirmButton: false,
       });
+      return true;
     },
     [cvId],
   );

@@ -15,7 +15,7 @@
 - TypeScript strict mode is enabled; avoid `any` and prefer typed helpers.
 - Keep React components under 200 lines and functions under 50 lines.
 - Tailwind CSS is available globally; prefer utility classes over bespoke CSS.
-- Upload flows use Cloudinary unsigned uploads. Persist only URLs and metadata on the server.
+- Upload flows stream through Cloudinary using server-owned credentials; only metadata persists in the database.
 - Prisma uses the MongoDB provider; update the schema and run `npm run db:push` when models change.
 - All coding summary must be written in a raw .md format
 

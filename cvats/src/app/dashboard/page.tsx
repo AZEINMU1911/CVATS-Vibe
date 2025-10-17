@@ -4,17 +4,18 @@ import type { FormEvent, ReactNode, RefObject } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { signOut, useSession } from "next-auth/react";
-import { useUploadToCloudinary, type UploadStatus } from "@/hooks/use-upload-to-cloudinary";
+import { useResumeUpload, type UploadStatus } from "@/hooks/use-resume-upload";
 import { validateFile } from "@/lib/validate-file";
 import { useAnalyze } from "@/hooks/use-analyze";
 import { useCvList } from "@/hooks/use-cv-list";
 import Swal from "sweetalert2";
+import type { InlineAnalysisPayload } from "@/types/analysis";
 
 interface CvSummary {
   id: string;
   fileName: string;
   secureUrl: string;
-  fileUrl?: string | null;
+  fileUrl: string;
   fileSize: number;
   bytes?: number | null;
   mimeType: string;
@@ -41,7 +42,6 @@ interface UploadFormProps {
   maxFileLabel: string;
   selectedFileName: string | null;
   selectedFileSize: number | null;
-  uploadsEnabled: boolean;
 }
 
 interface CvListProps {
@@ -51,6 +51,8 @@ interface CvListProps {
   isLoadingMore: boolean;
   loadMore: () => Promise<void> | void;
   deleteCv: (id: string) => Promise<boolean>;
+  inlinePayloads: Record<string, InlineAnalysisPayload>;
+  onInlinePayloadConsumed: (cvId: string) => void;
   errorMessage?: string | null;
 }
 
@@ -81,7 +83,7 @@ const statusLabel = (status: UploadStatus, fallback: string | null, error: strin
   }
 
   if (status === "uploading") {
-    return "Uploading to Cloudinary…";
+    return "Uploading resume…";
   }
 
   if (status === "success") {
@@ -106,8 +108,8 @@ const UploadFormHeader = () => (
       Upload a PDF or DOCX resume
     </h2>
     <p className="text-sm text-slate-500 dark:text-slate-300">
-      Drag and drop a file or choose one from your device. We&apos;ll send it straight to Cloudinary
-      and store only the metadata.
+      Drag and drop a file or choose one from your device. We stream it through our server, secure it
+      in Cloudinary, and store only the metadata.
     </p>
   </div>
 );
@@ -151,9 +153,8 @@ const UploadControls = ({
   selectedFileName,
   selectedFileSize,
   maxFileLabel,
-  uploadsEnabled,
   children,
-}: Pick<UploadFormProps, "status" | "maxFileLabel" | "selectedFileName" | "selectedFileSize" | "uploadsEnabled"> & {
+}: Pick<UploadFormProps, "status" | "maxFileLabel" | "selectedFileName" | "selectedFileSize"> & {
   children: ReactNode;
 }) => (
   <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -173,12 +174,7 @@ const UploadControls = ({
       <button
         type="submit"
         className="inline-flex min-w-[140px] items-center justify-center rounded-full bg-blue-600 px-5 py-2 text-sm font-semibold text-white transition hover:bg-blue-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:bg-blue-300 dark:bg-blue-500 dark:hover:bg-blue-400"
-        disabled={status === "uploading" || !selectedFileName || !uploadsEnabled}
-        title={
-          uploadsEnabled
-            ? undefined
-            : "Cloudinary uploads disabled. Configure CLOUDINARY_CLOUD_NAME and CLOUDINARY_UPLOAD_PRESET."
-        }
+        disabled={status === "uploading" || !selectedFileName}
       >
         {status === "uploading" ? "Uploading…" : "Save to CVs"}
       </button>
@@ -212,7 +208,6 @@ const UploadForm = ({
   maxFileLabel,
   selectedFileName,
   selectedFileSize,
-  uploadsEnabled,
 }: UploadFormProps) => (
   <UploadFormSection>
     <form className="flex flex-col gap-5" onSubmit={onSubmit}>
@@ -229,15 +224,12 @@ const UploadForm = ({
         selectedFileName={selectedFileName}
         selectedFileSize={selectedFileSize ?? null}
         maxFileLabel={maxFileLabel}
-        uploadsEnabled={uploadsEnabled}
       >
-        {!uploadsEnabled
-          ? "Cloudinary uploads are disabled until environment variables are configured."
-          : status === "uploading"
-            ? "Uploading to Cloudinary…"
-            : selectedFileName
-              ? "All set — click save to persist metadata."
-              : "Ready when you are — PDFs and DOCX files only."}
+        {status === "uploading"
+          ? "Uploading securely through our server…"
+          : selectedFileName
+            ? "All set — click save to persist metadata."
+            : "Ready when you are — PDFs and DOCX files only."}
       </UploadControls>
       <UploadStatusBanner statusMessage={statusMessage} hasError={hasError} />
     </form>
@@ -291,12 +283,27 @@ const CvEmptyState = () => (
   </div>
 );
 
-const CvCard = ({ cv, onDelete }: { cv: CvSummary; onDelete: (id: string) => Promise<boolean> }) => {
+interface CvCardProps {
+  cv: CvSummary;
+  onDelete: (id: string) => Promise<boolean>;
+  inlinePayload?: InlineAnalysisPayload | null;
+  onInlinePayloadConsumed?: () => void;
+}
+
+const CvCard = ({ cv, onDelete, inlinePayload, onInlinePayloadConsumed }: CvCardProps) => {
   const { analyses, status, error, analyze } = useAnalyze(cv.id);
   const [isDeleting, setIsDeleting] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
   const confirmButtonId = `delete-confirm-${cv.id}`;
   const cancelButtonId = `delete-cancel-${cv.id}`;
+
+  const handleAnalyze = useCallback(() => {
+    void analyze({ inline: inlinePayload ?? null }).then((success) => {
+      if (success && inlinePayload) {
+        onInlinePayloadConsumed?.();
+      }
+    });
+  }, [analyze, inlinePayload, onInlinePayloadConsumed]);
 
   const handleDelete = async () => {
     setIsDeleting(true);
@@ -337,9 +344,7 @@ const CvCard = ({ cv, onDelete }: { cv: CvSummary; onDelete: (id: string) => Pro
         <div className="flex gap-2">
           <button
             type="button"
-            onClick={() => {
-              void analyze();
-            }}
+            onClick={handleAnalyze}
             disabled={status === "running" || isDeleting}
             className="inline-flex items-center justify-center rounded-full bg-blue-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-blue-300 dark:bg-blue-500 dark:hover:bg-blue-400"
           >
@@ -537,6 +542,8 @@ const CvList = ({
   isLoadingMore,
   loadMore,
   deleteCv,
+  inlinePayloads,
+  onInlinePayloadConsumed,
   errorMessage,
 }: CvListProps) => (
   <CvListShell>
@@ -554,7 +561,13 @@ const CvList = ({
       <>
         <ul className="mt-8 space-y-4">
           {cvs.map((cv) => (
-            <CvCard key={cv.id} cv={cv} onDelete={deleteCv} />
+            <CvCard
+              key={cv.id}
+              cv={cv}
+              onDelete={deleteCv}
+              inlinePayload={inlinePayloads[cv.id] ?? null}
+              onInlinePayloadConsumed={() => onInlinePayloadConsumed(cv.id)}
+            />
           ))}
         </ul>
         {nextCursor ? (
@@ -585,15 +598,14 @@ export default function DashboardPage() {
   const [selectedFileInfo, setSelectedFileInfo] = useState<{ name: string; size: number } | null>(
     null,
   );
+  const [inlinePayloadMap, setInlinePayloadMap] = useState<Record<string, InlineAnalysisPayload>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
   const {
     status,
     error: uploadError,
     upload,
     reset,
-    isConfigured,
-    configError,
-  } = useUploadToCloudinary();
+  } = useResumeUpload();
   const stats = useMemo(() => {
     const totalBytes = cvs.reduce((acc, cv) => acc + (cv.bytes ?? cv.fileSize), 0);
     return {
@@ -647,51 +659,21 @@ export default function DashboardPage() {
         return;
       }
 
-      if (!isConfigured) {
-        const message =
-          configError ??
-          "Cloudinary uploads are disabled. Configure CLOUDINARY_CLOUD_NAME and CLOUDINARY_UPLOAD_PRESET.";
-        setClientError(message);
-        return;
-      }
-
       try {
-        const cloudinary = await upload(file);
-        const response = await fetch("/api/uploads", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          credentials: "include",
-          body: JSON.stringify({
-            secure_url: cloudinary.secureUrl,
-            public_id: cloudinary.publicId,
-            resource_type: cloudinary.resourceType,
-            access_mode: cloudinary.accessMode,
-            type: cloudinary.type,
-            bytes: cloudinary.bytes,
-            format: cloudinary.format ?? null,
-            original_filename: cloudinary.originalFilename ?? file.name.replace(/\.[^/.]+$/, ""),
-            created_at: cloudinary.createdAt ?? new Date().toISOString(),
-            mimeType: file.type,
-          }),
-        });
-
-        if (!response.ok) {
-          const payload = (await response.json().catch(() => ({}))) as { error?: string };
-          throw new Error(payload.error ?? "Failed to persist CV metadata.");
-        }
-
-        const payload = (await response.json()) as { cv: CvSummary };
-        void refresh({ prepend: payload.cv });
-        setSuccessMessage(`Uploaded ${payload.cv.fileName}.`);
+        const outcome = await upload(file);
+        void refresh({ prepend: outcome.cv });
+        setInlinePayloadMap((current) => ({
+          ...current,
+          [outcome.cv.id]: outcome.inline,
+        }));
+        setSuccessMessage(`Uploaded ${outcome.cv.fileName}.`);
         if (fileInputRef.current) {
           fileInputRef.current.value = "";
         }
         setSelectedFileInfo(null);
         void Swal.fire({
           title: "Upload successful",
-          text: `${payload.cv.fileName} is ready for analysis.`,
+          text: `${outcome.cv.fileName} is ready for analysis.`,
           icon: "success",
           timer: 1600,
           showConfirmButton: false,
@@ -701,15 +683,37 @@ export default function DashboardPage() {
         setClientError(message);
       }
     },
-    [configError, isConfigured, refresh, upload],
+    [refresh, upload],
+  );
+
+  const handleInlinePayloadConsumed = useCallback((cvId: string) => {
+    setInlinePayloadMap((current) => {
+      if (!(cvId in current)) {
+        return current;
+      }
+      const next = { ...current };
+      delete next[cvId];
+      return next;
+    });
+  }, []);
+
+  const handleDeleteCv = useCallback(
+    async (id: string) => {
+      const deleted = await deleteCv(id);
+      if (deleted) {
+        handleInlinePayloadConsumed(id);
+      }
+      return deleted;
+    },
+    [deleteCv, handleInlinePayloadConsumed],
   );
 
   const statusMessage = useMemo(() => {
-    const errorMessage = configError ?? clientError ?? uploadError;
+    const errorMessage = clientError ?? uploadError ?? null;
     return statusLabel(status, successMessage, errorMessage);
-  }, [configError, status, successMessage, clientError, uploadError]);
+  }, [status, successMessage, clientError, uploadError]);
 
-  const statusHasError = Boolean(configError ?? clientError ?? uploadError);
+  const statusHasError = Boolean(clientError ?? uploadError);
   const maxFileLabel = process.env.NEXT_PUBLIC_MAX_FILE_MB ?? "8";
   const selectedFileName = selectedFileInfo?.name ?? null;
   const selectedFileSize = selectedFileInfo?.size ?? null;
@@ -741,8 +745,8 @@ export default function DashboardPage() {
               <div>
                 <h1 className="text-3xl font-semibold text-white">My CVs</h1>
                 <p className="text-sm text-slate-200">
-                  Upload resumes directly to Cloudinary using the unsigned preset. CVATS stores only
-                  the resulting URL and metadata for downstream analysis.
+                  Upload resumes through our server-owned pipeline. We stream files to Cloudinary with
+                  secure credentials and keep only the metadata needed for downstream analysis.
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-3 text-xs font-medium">
@@ -779,18 +783,19 @@ export default function DashboardPage() {
           maxFileLabel={maxFileLabel}
           selectedFileName={selectedFileName}
           selectedFileSize={selectedFileSize}
-          uploadsEnabled={isConfigured}
         />
 
-      <CvList
-        cvs={cvs}
-        fetchState={fetchState}
-        nextCursor={nextCursor ?? null}
-        isLoadingMore={isLoadingMore}
-        loadMore={loadMore}
-        deleteCv={deleteCv}
-        errorMessage={error}
-      />
+        <CvList
+          cvs={cvs}
+          fetchState={fetchState}
+          nextCursor={nextCursor ?? null}
+          isLoadingMore={isLoadingMore}
+          loadMore={loadMore}
+          deleteCv={handleDeleteCv}
+          inlinePayloads={inlinePayloadMap}
+          onInlinePayloadConsumed={handleInlinePayloadConsumed}
+          errorMessage={error}
+        />
       </main>
     </div>
   );
