@@ -1,3 +1,4 @@
+import type { AnalysisHistory } from "@prisma/client";
 import type { PrismaClient } from "@prisma/client";
 import { createPrismaClient } from "@/server/prisma-client";
 
