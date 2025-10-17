@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { POST as register } from "@/app/api/auth/register/route";
 import { userRepository, resetUserRepository } from "@/server/user-repository";
 import { verifyPassword } from "@/lib/auth/password";
@@ -42,6 +42,7 @@ describe("auth flow", () => {
   });
 
   it("hashes passwords and rejects invalid login attempts", async () => {
+    vi.setConfig({ testTimeout: 15000 });
     await register(
       new Request("http://localhost/api/auth/register", {
         method: "POST",

@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { CV } from "@prisma/client";
 import { PrismaClient } from "@prisma/client";
-import { requireEnv } from "@/server/env";
 
 export interface CvRecord {
   id: string;
@@ -26,6 +25,7 @@ export interface CvRecord {
 
 export interface CreateCvInput {
   fileName: string;
+  fileUrl: string;
   secureUrl?: string | null;
   publicId: string;
   resourceType: string;
@@ -37,7 +37,6 @@ export interface CreateCvInput {
   format?: string | null;
   originalFilename?: string | null;
   createdAtRaw?: string | null;
-  legacyFileUrl?: string | null;
 }
 
 export interface CvRepository {
@@ -52,10 +51,6 @@ export interface CvRepository {
 
 const shouldUseMemory =
   process.env.NODE_ENV === "test" || !process.env.DATABASE_URL;
-
-if (process.env.NODE_ENV === "production") {
-  requireEnv(["NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME", "NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET"]);
-}
 
 type CvWithSecureUrl = CV & { secureUrl?: string | null };
 
@@ -73,7 +68,7 @@ const mapCv = (record: CV): CvRecord => {
     userId: record.userId,
     fileName: record.fileName,
     secureUrl: normalizedSecureUrl ?? normalizedFileUrl ?? "",
-    fileUrl: normalizedFileUrl,
+    fileUrl: normalizedFileUrl ?? normalizedSecureUrl ?? "",
     fileSize: record.fileSize,
     bytes: record.bytes ?? null,
     mimeType: record.mimeType,
@@ -110,12 +105,12 @@ const createPrismaRepository = (): CvRepository => {
         data: {
           userId,
           fileName: input.fileName,
-          secureUrl: input.secureUrl ?? null,
+          secureUrl: input.secureUrl ?? input.fileUrl,
           publicId: input.publicId,
           resourceType: input.resourceType,
           accessMode: input.accessMode,
           type: input.type,
-          fileUrl: input.legacyFileUrl ?? null,
+          fileUrl: input.fileUrl,
           fileSize: input.fileSize,
           mimeType: input.mimeType,
           bytes: input.bytes ?? null,
@@ -179,8 +174,8 @@ const createMemoryRepository = (): CvRepository => {
         id: randomUUID(),
         userId,
         fileName: input.fileName,
-        secureUrl: input.secureUrl ?? input.legacyFileUrl ?? "",
-        fileUrl: input.legacyFileUrl ?? null,
+        secureUrl: input.secureUrl ?? input.fileUrl,
+        fileUrl: input.fileUrl,
         fileSize: input.fileSize,
         bytes: input.bytes ?? null,
         mimeType: input.mimeType,

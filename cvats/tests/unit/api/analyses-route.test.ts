@@ -11,6 +11,12 @@ import {
 } from "@/server/analysis/gemini";
 import type * as GeminiModule from "@/server/analysis/gemini";
 
+const signedRawUrlMock = vi.fn<(publicId: string, version?: number | string) => string>();
+
+vi.mock("@/server/cloudinary-auth", () => ({
+  signedRawUrl: (publicId: string, version?: number | string) => signedRawUrlMock(publicId, version),
+}));
+
 type GeminiModuleType = typeof GeminiModule;
 
 const USER_ID = "analysis-user";
@@ -61,6 +67,9 @@ type ApiAnalysis = GeminiFileAnalysis & {
 
 type AnalysisResponseBody = { analysis: ApiAnalysis };
 
+let defaultBuffer: ArrayBuffer;
+let defaultInlineBytes: string;
+
 const makeResponse = (buffer: ArrayBuffer, mime = "application/pdf"): Response =>
   new Response(buffer, {
     status: 200,
@@ -80,9 +89,12 @@ beforeEach(() => {
   getAuthSessionMock.mockResolvedValue({ user: { id: USER_ID } });
   extractTextFromBufferMock.mockResolvedValue("javascript react node");
   analyzeWithGeminiMock.mockResolvedValue(sampleGeminiResult);
+  signedRawUrlMock.mockReset();
+  signedRawUrlMock.mockReturnValue("https://res.cloudinary.com/demo/raw/authenticated/v1/sample.pdf");
   process.env.GOOGLE_GEMINI_API_KEY = "test-key";
   const encoder = new TextEncoder();
-  const defaultBuffer = encoder.encode("%PDF resume").buffer;
+  defaultBuffer = encoder.encode("%PDF resume").buffer;
+  defaultInlineBytes = Buffer.from(new Uint8Array(defaultBuffer)).toString("base64");
   global.fetch = vi.fn(async (_input, init) => {
     if (init?.method === "HEAD") {
       return new Response(null, {
@@ -103,7 +115,12 @@ afterEach(() => {
   delete process.env.GOOGLE_GEMINI_API_KEY;
 });
 
-const createRequest = (payload: unknown) =>
+const createRequest = (payload: {
+  cvId?: string;
+  keywords?: string[];
+  __bytes?: string;
+  mimeType?: string;
+}) =>
   new Request("http://localhost/api/analyses", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -112,6 +129,7 @@ const createRequest = (payload: unknown) =>
 
 const buildCvInput = (overrides: Partial<CreateCvInput> = {}): CreateCvInput => ({
   fileName: "sample.pdf",
+  fileUrl: "https://res.cloudinary.com/demo/raw/upload/v1/sample.pdf",
   secureUrl: "https://res.cloudinary.com/demo/raw/upload/v1/sample.pdf",
   publicId: "cvats/sample",
   resourceType: "raw",
@@ -123,7 +141,6 @@ const buildCvInput = (overrides: Partial<CreateCvInput> = {}): CreateCvInput => 
   format: "pdf",
   originalFilename: "sample",
   createdAtRaw: "2024-01-01T00:00:00Z",
-  legacyFileUrl: null,
   ...overrides,
 });
 
@@ -141,14 +158,18 @@ describe("POST /api/analyses", () => {
     getAuthSessionMock.mockResolvedValue({ user: { id: OTHER_USER_ID } });
     const cv = await createCv();
 
-    const response = await POST(createRequest({ cvId: cv.id }));
+    const response = await POST(
+      createRequest({ cvId: cv.id, __bytes: defaultInlineBytes, mimeType: "application/pdf" }),
+    );
     expect(response.status).toBe(404);
   });
 
   it("creates a Gemini-backed analysis and persists history", async () => {
     const cv = await createCv({ fileSize: 2048, bytes: 2048 });
 
-    const response = await POST(createRequest({ cvId: cv.id }));
+    const response = await POST(
+      createRequest({ cvId: cv.id, __bytes: defaultInlineBytes, mimeType: "application/pdf" }),
+    );
     expect(response.status).toBe(201);
     const payload = (await response.json()) as AnalysisResponseBody;
 
@@ -166,15 +187,16 @@ describe("POST /api/analyses", () => {
     expect(updatedCv?.analyzedAt).toBeTruthy();
 
     expect(analyzeWithGeminiMock).toHaveBeenCalled();
-    expect(global.fetch).toHaveBeenCalledWith(cv.secureUrl, expect.objectContaining({ method: "HEAD" }));
-    expect(global.fetch).toHaveBeenCalledWith(cv.secureUrl);
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
   it("falls back to keyword scoring when Gemini quota errors", async () => {
     analyzeWithGeminiMock.mockRejectedValueOnce(new GeminiQuotaError("Quota exceeded"));
     const cv = await createCv();
 
-    const response = await POST(createRequest({ cvId: cv.id }));
+    const response = await POST(
+      createRequest({ cvId: cv.id, __bytes: defaultInlineBytes, mimeType: "application/pdf" }),
+    );
     expect(response.status).toBe(201);
     const payload = (await response.json()) as AnalysisResponseBody;
 
@@ -183,54 +205,67 @@ describe("POST /api/analyses", () => {
     expect(payload.analysis.keywords.extracted).toContain("javascript");
     expect(payload.analysis.keywords.missing).toContain("typescript");
     expect(extractTextFromBufferMock).toHaveBeenCalled();
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
   it("falls back with PARSE reason when Gemini request times out", async () => {
     analyzeWithGeminiMock.mockRejectedValueOnce(new GeminiParseError("TIMEOUT"));
     const cv = await createCv();
 
-    const response = await POST(createRequest({ cvId: cv.id }));
+    const response = await POST(
+      createRequest({ cvId: cv.id, __bytes: defaultInlineBytes, mimeType: "application/pdf" }),
+    );
     expect(response.status).toBe(201);
     const payload = (await response.json()) as AnalysisResponseBody;
 
     expect(payload.analysis.usedFallback).toBe(true);
     expect(payload.analysis.fallbackReason).toBe("PARSE");
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
   it("falls back with EMPTY reason when Gemini returns empty content", async () => {
     analyzeWithGeminiMock.mockRejectedValueOnce(new GeminiParseError("EMPTY_OR_NON_JSON"));
     const cv = await createCv();
 
-    const response = await POST(createRequest({ cvId: cv.id }));
+    const response = await POST(
+      createRequest({ cvId: cv.id, __bytes: defaultInlineBytes, mimeType: "application/pdf" }),
+    );
     expect(response.status).toBe(201);
     const payload = (await response.json()) as AnalysisResponseBody;
 
     expect(payload.analysis.usedFallback).toBe(true);
     expect(payload.analysis.fallbackReason).toBe("EMPTY");
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
   it("falls back with EMPTY_PROD reason when Gemini signals production empty", async () => {
     analyzeWithGeminiMock.mockRejectedValueOnce(new GeminiParseError("EMPTY_PROD"));
     const cv = await createCv();
 
-    const response = await POST(createRequest({ cvId: cv.id }));
+    const response = await POST(
+      createRequest({ cvId: cv.id, __bytes: defaultInlineBytes, mimeType: "application/pdf" }),
+    );
     expect(response.status).toBe(201);
     const payload = (await response.json()) as AnalysisResponseBody;
 
     expect(payload.analysis.usedFallback).toBe(true);
     expect(payload.analysis.fallbackReason).toBe("EMPTY_PROD");
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
   it("falls back with SAFETY reason when Gemini rejects safety settings", async () => {
     analyzeWithGeminiMock.mockRejectedValueOnce(new GeminiParseError("SAFETY_REJECTION"));
     const cv = await createCv();
 
-    const response = await POST(createRequest({ cvId: cv.id }));
+    const response = await POST(
+      createRequest({ cvId: cv.id, __bytes: defaultInlineBytes, mimeType: "application/pdf" }),
+    );
     expect(response.status).toBe(201);
     const payload = (await response.json()) as AnalysisResponseBody;
 
     expect(payload.analysis.usedFallback).toBe(true);
     expect(payload.analysis.fallbackReason).toBe("SAFETY");
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
   it("uses fallback when Gemini API key is missing", async () => {
@@ -244,12 +279,28 @@ describe("POST /api/analyses", () => {
     expect(payload.analysis.usedFallback).toBe(true);
     expect(payload.analysis.fallbackReason).toBe("PARSE");
     expect(analyzeWithGeminiMock).not.toHaveBeenCalled();
+    expect(global.fetch).toHaveBeenCalled();
   });
 
-  it("returns 502 when the Cloudinary HEAD request fails", async () => {
-    global.fetch = vi.fn(async (_input, init) => {
+  it("returns 400 when inline bytes are invalid base64", async () => {
+    const cv = await createCv();
+    const response = await POST(
+      createRequest({ cvId: cv.id, __bytes: "%%%invalid%%%", mimeType: "application/pdf" }),
+    );
+    expect(response.status).toBe(400);
+    const body = (await response.json()) as { error?: string };
+    expect(body.error).toBe("INVALID_INLINE_BYTES");
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it("returns 502 when both public and authenticated Cloudinary delivery fail", async () => {
+    global.fetch = vi.fn(async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
       if (init?.method === "HEAD") {
-        return new Response(null, { status: 404 });
+        if (url.includes("/raw/authenticated/")) {
+          return new Response(null, { status: 404 });
+        }
+        return new Response(null, { status: 403 });
       }
       const encoder = new TextEncoder();
       return makeResponse(encoder.encode("%PDF resume").buffer);
@@ -260,6 +311,44 @@ describe("POST /api/analyses", () => {
     expect(response.status).toBe(502);
     const body = (await response.json()) as { error?: string };
     expect(body.error).toBe("CLOUDINARY_FETCH_FAILED");
+    expect(signedRawUrlMock).toHaveBeenCalledWith("cvats/sample", 1);
+    expect(signedRawUrlMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to authenticated delivery when public Cloudinary access is blocked", async () => {
+    const encoder = new TextEncoder();
+    const buffer = encoder.encode("%PDF resume").buffer;
+    const signedUrl = "https://res.cloudinary.com/demo/raw/authenticated/v1/sample.pdf";
+    signedRawUrlMock.mockReturnValueOnce(signedUrl);
+
+    const fetchSpy = vi.fn(async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      if (init?.method === "HEAD") {
+        if (url === signedUrl) {
+          return new Response(null, {
+            status: 200,
+            headers: {
+              "content-length": String(buffer.byteLength),
+              "content-type": "application/pdf",
+            },
+          });
+        }
+        return new Response(null, { status: 403 });
+      }
+      if (url === signedUrl) {
+        return makeResponse(buffer);
+      }
+      return new Response(null, { status: 403 });
+    });
+    global.fetch = fetchSpy as unknown as typeof fetch;
+
+    const cv = await createCv();
+    const response = await POST(createRequest({ cvId: cv.id }));
+    expect(response.status).toBe(201);
+    expect(signedRawUrlMock).toHaveBeenCalledWith("cvats/sample", 1);
+    expect(signedRawUrlMock).toHaveBeenCalledTimes(1);
+    expect(fetchSpy).toHaveBeenCalledWith(signedUrl, expect.objectContaining({ method: "HEAD" }));
+    expect(fetchSpy).toHaveBeenCalledWith(signedUrl);
   });
 
   it("normalizes legacy image delivery URLs to raw for document downloads", async () => {
@@ -283,10 +372,14 @@ describe("POST /api/analyses", () => {
     });
     global.fetch = fetchSpy as unknown as typeof fetch;
 
-    const cv = await createCv({ secureUrl: "", legacyFileUrl: legacyUrl });
+    const cv = await createCv({ fileUrl: legacyUrl, secureUrl: "" });
     const response = await POST(createRequest({ cvId: cv.id }));
     expect(response.status).toBe(201);
-    expect(fetchSpy).toHaveBeenCalledWith(expect.stringContaining("/raw/upload/"), expect.objectContaining({ method: "HEAD" }));
+    expect(fetchSpy).toHaveBeenCalledWith(
+      expect.stringContaining("/raw/upload/"),
+      expect.objectContaining({ method: "HEAD" }),
+    );
+    expect(signedRawUrlMock).not.toHaveBeenCalled();
   });
 
   it("returns 413 when file exceeds configured limit", async () => {
@@ -295,6 +388,7 @@ describe("POST /api/analyses", () => {
 
     const cv = await createCv({
       fileName: "oversize.pdf",
+      fileUrl: "https://res.cloudinary.com/demo/raw/upload/v1/oversize.pdf",
       secureUrl: "https://res.cloudinary.com/demo/raw/upload/v1/oversize.pdf",
       fileSize: largeArray.length,
       bytes: largeArray.length,

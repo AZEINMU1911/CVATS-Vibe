@@ -2,31 +2,41 @@ import path from "node:path";
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
 
+type ForceAuthWindow = Window & { __forceCloudinaryAuth?: boolean };
+
 test.describe.configure({ mode: "serial" });
 test.setTimeout(120_000);
 
 const getCvItems = (page: Page) => page.locator('[data-testid="cv-card"]');
 
-const setupAppRoutes = async (page: Page, cloudinaryOverrides?: Record<string, unknown>) => {
-  await page.route("https://api.cloudinary.com/**", async (route) => {
-    const payload = {
-      secure_url: "http://127.0.0.1:3000/fixtures/sample.pdf",
-      public_id: "cvats/sample",
-      bytes: 8_192,
-      resource_type: "raw",
-      access_mode: "public",
-      type: "upload",
-      format: "pdf",
-      original_filename: "sample",
-      created_at: "2024-01-01T00:00:00Z",
-      ...cloudinaryOverrides,
-    };
-    await route.fulfill({
-      status: 200,
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(payload),
-    });
+type RouteOptions = {
+  cloudinaryOverrides?: Record<string, unknown>;
+  stubAnalyses?: boolean;
+};
+
+const setupAppRoutes = async (page: Page, options?: RouteOptions) => {
+  await page.request.post("/api/test/cloudinary-stub", {
+    data: {
+      mode: "success",
+      result: {
+        secure_url: "http://127.0.0.1:3000/api/test/cloudinary-signed?public=1",
+        public_id: "cvats/sample",
+        bytes: 8_192,
+        resource_type: "raw",
+        access_mode: "authenticated",
+        type: "upload",
+        format: "pdf",
+        original_filename: "sample",
+        created_at: "2024-01-01T00:00:00Z",
+        version: 1,
+        ...(options?.cloudinaryOverrides ?? {}),
+      },
+    },
   });
+
+  if (options?.stubAnalyses === false) {
+    return;
+  }
 
   let analysisCalls = 0;
   const analysisScenarios = [
@@ -213,13 +223,8 @@ test("register, upload, and isolate CVs per user", async ({ page, browser }) => 
   await secondContext.close();
 });
 
-test("blocks uploads when Cloudinary preset is not public/raw", async ({ page }) => {
-  let uploadsCalled = false;
-  await page.route("**/api/uploads", async (route) => {
-    uploadsCalled = true;
-    await route.fulfill({ status: 500, body: JSON.stringify({ error: "should not be called" }) });
-  });
-  await setupAppRoutes(page, { access_mode: "authenticated" });
+test("blocks uploads when Cloudinary resource type is misconfigured", async ({ page }) => {
+  await setupAppRoutes(page, { cloudinaryOverrides: { resource_type: "image" } });
 
   const timestamp = Date.now();
   const password = "Password123";
@@ -232,8 +237,81 @@ test("blocks uploads when Cloudinary preset is not public/raw", async ({ page })
   await page.setInputFiles('input[type="file"]', fixturePath);
   await page.getByRole("button", { name: "Save to CVs" }).click();
 
-  await expect(page.getByText("Upload preset misconfigured (must be Public/Raw).", { exact: false })).toBeVisible();
-  expect(uploadsCalled).toBe(false);
+  await expect(
+    page.getByText("Cloudinary upload must use the raw resource type.", { exact: false }),
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: "Sign out" }).click();
+  await expect(page).toHaveURL(/\/?$/);
+});
+
+test("analysis uses signed Cloudinary delivery when public access is blocked", async ({ page }) => {
+  try {
+    await page.unroute("**/api/analyses");
+  } catch {
+    // ignore if no existing route
+  }
+  await setupAppRoutes(page, { stubAnalyses: false });
+
+  await page.addInitScript(() => {
+    const globalWindow = window as ForceAuthWindow;
+    globalWindow.__forceCloudinaryAuth = false;
+    const originalFetch = globalWindow.fetch.bind(globalWindow) as typeof fetch;
+    globalWindow.fetch = (input: RequestInfo | URL, init: RequestInit = {}) => {
+      let url: string;
+      if (typeof input === "string") {
+        url = input;
+      } else if (input instanceof Request) {
+        url = input.url;
+      } else {
+        url = String(input);
+      }
+       if (url.includes("/api/analyses") && globalWindow.__forceCloudinaryAuth) {
+        const headers = new Headers(init.headers ?? {});
+        headers.set("x-cloudinary-test", "force-auth");
+        init.headers = headers;
+      }
+      return originalFetch(input, init);
+    };
+  });
+
+  const timestamp = Date.now();
+  const password = "Password123";
+  const email = `signed-${timestamp}@example.com`;
+
+  await registrationForm(page, email, password);
+  await loginForm(page, email, password);
+
+  const fixturePath = path.resolve(__dirname, "../fixtures/sample.pdf");
+  await page.setInputFiles('input[type="file"]', fixturePath);
+  const uploadResponsePromise = page.waitForResponse((response) =>
+    response.url().includes("/api/uploads") && response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Save to CVs" }).click();
+  const uploadResponse = await uploadResponsePromise;
+  expect(uploadResponse.status()).toBe(201);
+
+  await expect(page.getByRole("link", { name: "sample.pdf" }).first()).toBeVisible();
+
+  const firstAnalysisResponse = page.waitForResponse((response) =>
+    response.url().includes("/api/analyses") && response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Analyze" }).first().click();
+  expect((await firstAnalysisResponse).status()).toBe(201);
+  await expect(page.getByText("ATS Score", { exact: false })).toBeVisible({ timeout: 12000 });
+
+  await page.evaluate(() => {
+    const globalWindow = window as ForceAuthWindow;
+    globalWindow.__forceCloudinaryAuth = true;
+  });
+
+  const fallbackAnalysisResponse = page.waitForResponse((response) =>
+    response.url().includes("/api/analyses") && response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Analyze" }).first().click();
+  const fallbackResponse = await fallbackAnalysisResponse;
+  expect(fallbackResponse.status()).toBe(201);
+  await expect(page.getByText("ATS Score", { exact: false })).toBeVisible({ timeout: 12000 });
 
   await page.getByRole("button", { name: "Sign out" }).click();
   await expect(page).toHaveURL(/\/?$/);

@@ -8,7 +8,7 @@ const features = [
   {
     title: "Cloud-first uploads",
     description:
-      "Files go straight from the browser to Cloudinary (unsigned preset). The dashboard only stores metadata.",
+      "Files stream through our server to Cloudinary with signed credentials, keeping the client free of secrets.",
   },
   {
     title: "Collaboration-ready",
@@ -41,8 +41,9 @@ export default function MarketingPage() {
                 Understand every resume at a glance.
               </h1>
               <p className="max-w-xl text-lg text-slate-200 sm:text-xl">
-                CVATS turns uploads into rich candidate analysis without handling raw files on the
-                server. Deliver fast, compliant insights for recruiters and hiring teams.
+                CVATS turns uploads into rich candidate analysis while your raw files stay secured
+                in Cloudinary under server-owned credentials. Deliver fast, compliant insights for
+                recruiters and hiring teams.
               </p>
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
                 <Link
@@ -112,7 +113,7 @@ export default function MarketingPage() {
             Secure uploads, insightful output.
           </h2>
           <p className="mx-auto mt-4 max-w-2xl text-slate-200">
-            Resume files are delivered straight to Cloudinary via an unsigned preset. The CVATS
+            Resume files stream through our API to Cloudinary using signed credentials. The CVATS
             server stores only URLs, metadata, and analysis summaries so you remain compliant and
             ready to scale.
           </p>

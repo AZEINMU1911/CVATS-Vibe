@@ -15,7 +15,8 @@ Visit `http://localhost:3000` for the marketing site and `http://localhost:3000/
 
 - Marketing landing page that mirrors the dashboard visual theme and describes the CVATS value prop.
 - Authentication with email/password (Auth.js credentials provider) plus registration and sign-out flows.
-- Dashboard with direct-to-Cloudinary uploads, inline status banners, and per-CV metadata cards.
+- Dashboard with server-owned Cloudinary uploads (no presets), inline status banners, and per-CV metadata cards.
+- Server-owned uploads (no presets). Analysis runs from in-memory bytes; Cloudinary is used for storage with signed delivery when public access is blocked.
 - ATS-style resume analysis powered by Gemini inlineData JSON (ATS score, feedback, keyword diff) with deterministic keyword fallback and SweetAlert feedback.
 - Cursor-based pagination and confirmable deletion for CVs, with all data scoped to the signed-in user.
 - Automated tooling: ESLint, TypeScript strict mode, Vitest unit/API tests, Playwright e2e coverage.
@@ -27,20 +28,21 @@ Visit `http://localhost:3000` for the marketing site and `http://localhost:3000/
 - `npm run lint` — run ESLint with the project rules.
 - `npm run typecheck` — TypeScript no-emit verification.
 - `npm run test` — execute Vitest unit/API tests.
-- `npm run e2e` — run Playwright end-to-end tests (auto-starts the dev server and intercepts Cloudinary uploads).
+- `npm run e2e` — run Playwright end-to-end tests (auto-starts the dev server and stubs the server-side Cloudinary stream).
 - `npm run db:push` — sync Prisma schema to MongoDB.
 - `npm run db:studio` — open Prisma Studio for data inspection.
 
 ### Environment
 
-Copy `.env.example` to `.env.local` and supply values for MongoDB, Cloudinary, and NextAuth. Client uploads use an unsigned Cloudinary preset (no secrets in the browser) that must be configured for **resource type Raw** and **Public access mode**. The server persists CVs to MongoDB when `DATABASE_URL` is defined (otherwise it falls back to in-memory repositories for local development).
+Copy `.env.example` to `.env.local` and supply values for MongoDB, Cloudinary, and NextAuth. Server-side uploads require `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, and `CLOUDINARY_API_SECRET`; the browser never sees these secrets. Client limits (max file size and allowed MIME types) remain configurable via the `NEXT_PUBLIC_*` values. The server persists CVs to MongoDB when `DATABASE_URL` is defined (otherwise it falls back to in-memory repositories for local development).
 
 Expose the following variables (see `.env.example`):
 
 ```
 DATABASE_URL="mongodb+srv://..."
 CLOUDINARY_CLOUD_NAME="your-cloud-name"
-CLOUDINARY_UPLOAD_PRESET="unsigned-preset"
+CLOUDINARY_API_KEY="your-api-key"
+CLOUDINARY_API_SECRET="your-api-secret"
 NEXT_PUBLIC_MAX_FILE_MB=8
 NEXT_PUBLIC_ALLOWED_MIME=application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document
 NEXTAUTH_URL=http://localhost:3000
@@ -55,11 +57,11 @@ ANALYSIS_MAX_FILE_MB=10
 
 ### Testing Notes
 
-Vitest covers utility and API logic (including upload validation and persistence). Playwright validates marketing navigation and the Cloudinary → metadata flow using a stubbed upload response. CI executes linting, type checking, unit tests, and e2e tests on every push.
+Vitest covers utility and API logic (including upload validation and persistence). Playwright validates marketing navigation and the server-owned Cloudinary stream → metadata flow using a stubbed upload response. CI executes linting, type checking, unit tests, and e2e tests on every push.
 
 ### CV Analysis
 
-- `POST /api/analyses` downloads the Cloudinary file bytes, enforces the `ANALYSIS_MAX_FILE_MB` size cap, and first submits the binary directly to Gemini via `inlineData`, prompting an ATS-style reviewer persona. If that finish reason is anything but `STOP` or the candidate comes back empty we retry once via the Gemini File API. Every request forces `application/json` with `temperature: 0.2` and validates against a strict schema.
+- `POST /api/analyses` prefers in-memory bytes returned from the upload API and only falls back to Cloudinary delivery when no inline payload is provided. Remote fetches issue a public `HEAD` before signing an authenticated URL if access is blocked. The handler enforces the `ANALYSIS_MAX_FILE_MB` size cap and streams the binary directly to Gemini via `inlineData`, retrying once via the Gemini File API whenever the finish reason is not `STOP`. Every request forces `application/json` with `temperature: 0.2` and validates against a strict schema.
 - The returned payload must match `{ "atsScore": number, "feedback": { "positive": string[], "improvements": string[] }, "keywords": { "extracted": string[], "missing": string[] } }`. A tolerant parser removes accidental ```json fences and validates with Zod before continuing.
 - Each run stores a record in `AnalysisHistory` (scoped by CV/user) and updates the parent CV with the latest `atsScore` and `analyzedAt` timestamp. `GET /api/analyses?cvId=...` returns the newest history entry for the signed-in user.
 - When Gemini returns a quota error, non-JSON, or empty content (after both attempts) — or when no API key is configured — the API falls back to deterministic keyword scoring using the downloaded bytes and tags the record with `usedFallback` plus a `QUOTA`, `PARSE`, or `EMPTY` reason.
@@ -76,9 +78,9 @@ Vitest covers utility and API logic (including upload validation and persistence
 ### How Uploads & Analysis Work
 
 1. Users register and log in with email/password; Auth.js issues an encrypted session cookie (JWT strategy).
-2. The dashboard sends files directly from the browser to Cloudinary using the unsigned preset.
-3. Once Cloudinary responds, the client calls `POST /api/uploads` with the verbatim `secure_url`, `public_id`, `resource_type`, `access_mode`, `type`, and related metadata. The API double-checks the preset is `raw/public`, associates the document with the session user, and stores the `secure_url` as the canonical delivery link (via Prisma or the in-memory repo in dev/tests).
-4. Triggering **Analyze** calls `POST /api/analyses`. The API fetches the stored CV, sends it to Gemini (inline first, file upload second if needed), validates the strict JSON response, and then persists the result with fallback metadata. If both AI attempts fail we score locally and label the run with `fallbackReason: "EMPTY"`.
+2. The dashboard submits multipart form data to `POST /api/uploads`. The API validates the file (size/mime), streams the buffer to Cloudinary using the server-owned API key/secret (`resource_type: "raw"`, `folder: "cvs"`), stores the metadata for the signed-in user, and returns the saved record plus a base64-encoded `__bytes` field for immediate analysis.
+3. The stored metadata (including `publicId`, canonical `secureUrl`, size, and mime type) powers the dashboard list; the raw file bytes are never persisted.
+4. Triggering **Analyze** calls `POST /api/analyses` with the CV id and, when available, the inline `__bytes`. The API prefers those bytes but can fall back to Cloudinary delivery (public first, then signed authenticated URLs) before invoking Gemini. Results are validated, persisted, and fallback metadata is recorded. If both AI attempts fail we score locally and label the run with `fallbackReason: "EMPTY"`.
 5. Users can request `GET /api/uploads`/`GET /api/analyses` to fetch their own assets; pagination keeps responses trim.
 
 ### Limitations & TODOs

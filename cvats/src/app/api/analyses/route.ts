@@ -17,6 +17,7 @@ import { scoreKeywords } from "@/server/analysis/score";
 import { checkRateLimit } from "@/server/rate-limit";
 import { getAuthSession } from "@/lib/auth/session";
 import { requireEnv } from "@/server/env";
+import { signedRawUrl } from "@/server/cloudinary-auth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -28,9 +29,8 @@ if (isProduction) {
     "GOOGLE_GEMINI_API_KEY",
     "GEMINI_MODEL",
     "CLOUDINARY_CLOUD_NAME",
-    "CLOUDINARY_UPLOAD_PRESET",
-    "NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME",
-    "NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET",
+    "CLOUDINARY_API_KEY",
+    "CLOUDINARY_API_SECRET",
     "DATABASE_URL",
   ]);
 }
@@ -42,6 +42,8 @@ const MAX_FILE_BYTES = ANALYSIS_MAX_FILE_MB * 1024 * 1024;
 const postSchema = z.object({
   cvId: z.string().min(1),
   keywords: z.array(z.string().min(1)).optional(),
+  __bytes: z.string().min(1).optional(),
+  mimeType: z.string().min(1).optional(),
 });
 
 const logAnalysis = (...values: unknown[]) => {
@@ -92,40 +94,45 @@ const toApiResponse = (record: AnalysisHistoryRecord): ApiAnalysisResponse => ({
   fallbackReason: asFallbackReason(record.fallbackReason),
 });
 
-const DOCUMENT_MIME_TYPES = new Set([
-  "application/pdf",
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-]);
+const isDocumentMime = (value: string | null | undefined): boolean =>
+  /pdf|word|officedocument/i.test(value ?? "");
 
-const normalizeLegacyCloudinaryUrl = (url: string | null | undefined, mimeType: string): string | null => {
-  if (!url) return null;
-  if (!url.includes("/image/upload/")) return url;
-  if (!DOCUMENT_MIME_TYPES.has(mimeType)) return url;
-  return url.replace("/image/upload/", "/raw/upload/");
-};
-
-const resolveDownloadUrl = (cv: CvRecord): string | null => {
-  if (cv.secureUrl && cv.secureUrl.length > 0) {
-    return cv.secureUrl;
+const deliveryUrlFromCv = (cv: CvRecord): string | null => {
+  let url = cv.fileUrl || cv.secureUrl || "";
+  if (!url) {
+    return null;
   }
-  const fallback = normalizeLegacyCloudinaryUrl(cv.fileUrl, cv.mimeType);
-  return fallback;
+  if (isDocumentMime(cv.mimeType) && url.includes("/image/upload/")) {
+    url = url.replace("/image/upload/", "/raw/upload/");
+  }
+  return url;
 };
 
-const ensureCloudinaryReachable = async (url: string): Promise<number> => {
+const extractVersionFromUrl = (url: string): number | undefined => {
+  const match = url.match(/\/v(\d+)\//i);
+  if (match) {
+    const parsed = Number.parseInt(match[1] ?? "", 10);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+};
+
+type HeadOutcome = {
+  status: number;
+  ok: boolean;
+  contentLength: number | null;
+};
+
+const headForCloudinary = async (url: string): Promise<HeadOutcome> => {
   const response = await fetch(url, { method: "HEAD" });
-  if (!response.ok) {
-    throw new Error(`HEAD_STATUS_${response.status}`);
-  }
   const lengthHeader = response.headers.get("content-length");
-  if (!lengthHeader) {
-    throw new Error("HEAD_MISSING_LENGTH");
-  }
-  const parsed = Number(lengthHeader);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    throw new Error("HEAD_INVALID_LENGTH");
-  }
-  return parsed;
+  const parsedLength = lengthHeader ? Number(lengthHeader) : null;
+  const contentLength = parsedLength && Number.isFinite(parsedLength) && parsedLength > 0 ? parsedLength : null;
+  return {
+    status: response.status,
+    ok: response.ok,
+    contentLength,
+  };
 };
 
 const fetchCvBinary = async (url: string): Promise<{ buffer: Buffer; mime: string | null }> => {
@@ -175,13 +182,22 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Rate limit exceeded. Please wait before retrying." }, { status: 429 });
   }
 
+  const forceAuthenticatedDelivery =
+    process.env.NODE_ENV !== "production" && request.headers.get("x-cloudinary-test") === "force-auth";
+
   const payload = await request.json().catch(() => null);
   const parsed = postSchema.safeParse(payload);
   if (!parsed.success) {
     return NextResponse.json({ error: "Invalid payload" }, { status: 400 });
   }
 
-  const { cvId, keywords } = parsed.data;
+  const { cvId, keywords, __bytes: inlineBytesRaw, mimeType: inlineMimeTypeRaw } = parsed.data;
+  const inlineBytes =
+    typeof inlineBytesRaw === "string" && inlineBytesRaw.trim().length > 0 ? inlineBytesRaw.trim() : null;
+  const inlineMimeType =
+    typeof inlineMimeTypeRaw === "string" && inlineMimeTypeRaw.trim().length > 0
+      ? inlineMimeTypeRaw.trim()
+      : null;
   const cv = await cvRepository.findById(cvId);
   if (!cv || cv.userId !== session.user.id) {
     return NextResponse.json({ error: "CV not found" }, { status: 404 });
@@ -195,22 +211,110 @@ export async function POST(request: Request) {
     );
   }
 
-  const downloadUrl = resolveDownloadUrl(cv);
-  if (!downloadUrl) {
-    console.error("ANALYSIS_CLOUDINARY_MISSING_URL", { cvId });
-    return NextResponse.json({ error: "CLOUDINARY_FETCH_FAILED" }, { status: 502 });
+  let fileDownload: { buffer: Buffer; mime: string | null } | null = null;
+  let finalUrl: string | null = null;
+  let remoteSize: number | null = null;
+
+  if (inlineBytes) {
+    const normalizedInline = inlineBytes.replace(/\s+/g, "");
+    const base64Pattern = /^[A-Za-z0-9+/]+={0,2}$/;
+    const isValidFormat = base64Pattern.test(normalizedInline) && normalizedInline.length % 4 === 0;
+    if (!isValidFormat) {
+      return NextResponse.json({ error: "INVALID_INLINE_BYTES" }, { status: 400 });
+    }
+    let inlineBuffer: Buffer;
+    try {
+      inlineBuffer = Buffer.from(normalizedInline, "base64");
+    } catch (error) {
+      console.error("ANALYSIS_INLINE_BYTES_INVALID_BASE64", {
+        cvId,
+        message: error instanceof Error ? error.message : "unknown",
+      });
+      return NextResponse.json({ error: "INVALID_INLINE_BYTES" }, { status: 400 });
+    }
+    if (!inlineBuffer || inlineBuffer.byteLength === 0) {
+      return NextResponse.json({ error: "INVALID_INLINE_BYTES" }, { status: 400 });
+    }
+    remoteSize = inlineBuffer.byteLength;
+    fileDownload = {
+      buffer: inlineBuffer,
+      mime: inlineMimeType ?? cv.mimeType ?? null,
+    };
+    logAnalysis("Using inline bytes for analysis", { cvId, size: inlineBuffer.byteLength });
+  } else {
+    const downloadUrl = deliveryUrlFromCv(cv);
+    if (!downloadUrl) {
+      console.error("ANALYSIS_CLOUDINARY_MISSING_URL", { cvId });
+      return NextResponse.json({ error: "CLOUDINARY_FETCH_FAILED" }, { status: 502 });
+    }
+
+    const publicHeadRaw = await headForCloudinary(downloadUrl);
+    const publicHead = forceAuthenticatedDelivery
+      ? { status: 403, ok: false, contentLength: null }
+      : publicHeadRaw;
+    console.log(`[analysis] cld public HEAD -> ${publicHead.status}`);
+    finalUrl = downloadUrl;
+    remoteSize = publicHead.contentLength;
+
+    if (!(publicHead.ok && remoteSize && remoteSize > 0)) {
+      try {
+        if (!cv.publicId) {
+          throw new Error("CLOUDINARY_PUBLIC_ID_MISSING");
+        }
+        const version =
+          extractVersionFromUrl(downloadUrl) ??
+          (cv.createdAtRaw && Number.isFinite(Number.parseInt(cv.createdAtRaw, 10))
+            ? Number.parseInt(cv.createdAtRaw, 10)
+            : undefined);
+        const signedUrl = signedRawUrl(cv.publicId, version);
+        finalUrl = signedUrl;
+        const authHead = await headForCloudinary(signedUrl);
+        console.log(`[analysis] cld auth HEAD -> ${authHead.status}`);
+        if (authHead.ok && authHead.contentLength && authHead.contentLength > 0) {
+          remoteSize = authHead.contentLength;
+        } else {
+          console.warn("[analysis] auth HEAD missing content-length", { cvId, status: authHead.status });
+          remoteSize = authHead.contentLength ?? null;
+        }
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : "SIGNED_URL_FAILURE";
+        console.error("ANALYSIS_CLOUDINARY_AUTH_FAILED", {
+          cvId,
+          url: downloadUrl,
+          detail,
+        });
+        return NextResponse.json({ error: "CLOUDINARY_FETCH_FAILED", detail }, { status: 502 });
+      }
+    } else {
+      logAnalysis("Cloudinary HEAD ok", { cvId, url: downloadUrl, remoteSize });
+    }
+
+    if (typeof remoteSize === "number" && remoteSize > MAX_FILE_BYTES) {
+      logAnalysis("Remote CV exceeds analysis size limit", { cvId, remoteSize });
+      return NextResponse.json(
+        { error: `File exceeds ${ANALYSIS_MAX_FILE_MB}MB analysis limit.` },
+        { status: 413 },
+      );
+    }
+
+    if (!finalUrl) {
+      return NextResponse.json({ error: "CLOUDINARY_FETCH_FAILED" }, { status: 502 });
+    }
+
+    try {
+      fileDownload = await fetchCvBinary(finalUrl);
+      logAnalysis("Fetched CV bytes", { cvId, size: fileDownload.buffer.byteLength, url: finalUrl });
+    } catch (error) {
+      console.error("ANALYSIS_CLOUDINARY_FETCH_FAILED", {
+        cvId,
+        url: finalUrl,
+        message: (error as Error).message,
+      });
+      return NextResponse.json({ error: "CLOUDINARY_FETCH_FAILED" }, { status: 502 });
+    }
   }
 
-  let remoteSize: number | null = null;
-  try {
-    remoteSize = await ensureCloudinaryReachable(downloadUrl);
-    logAnalysis("Cloudinary HEAD ok", { cvId, url: downloadUrl, remoteSize });
-  } catch (error) {
-    console.error("ANALYSIS_CLOUDINARY_HEAD_FAILED", {
-      cvId,
-      url: downloadUrl,
-      message: (error as Error).message,
-    });
+  if (!fileDownload) {
     return NextResponse.json({ error: "CLOUDINARY_FETCH_FAILED" }, { status: 502 });
   }
 
@@ -223,18 +327,6 @@ export async function POST(request: Request) {
   }
 
   const keywordList = mapKeywords(keywords);
-  let fileDownload: { buffer: Buffer; mime: string | null };
-  try {
-    fileDownload = await fetchCvBinary(downloadUrl);
-    logAnalysis("Fetched CV bytes", { cvId, size: fileDownload.buffer.byteLength });
-  } catch (error) {
-    console.error("ANALYSIS_CLOUDINARY_FETCH_FAILED", {
-      cvId,
-      url: downloadUrl,
-      message: (error as Error).message,
-    });
-    return NextResponse.json({ error: "CLOUDINARY_FETCH_FAILED" }, { status: 502 });
-  }
 
   if (fileDownload.buffer.byteLength > MAX_FILE_BYTES) {
     logAnalysis("CV exceeds analysis size limit", { cvId, size: fileDownload.buffer.byteLength });

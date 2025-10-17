@@ -6,7 +6,7 @@ export interface CvListItem {
   userId?: string;
   fileName: string;
   secureUrl: string;
-  fileUrl?: string | null;
+  fileUrl: string;
   fileSize: number;
   bytes?: number | null;
   mimeType: string;
