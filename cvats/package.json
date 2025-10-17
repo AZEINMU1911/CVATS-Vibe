@@ -13,8 +13,8 @@
     "verify": "npm run lint && npm run typecheck && npm run test && npm run e2e",
     "db:push": "prisma db push",
     "db:studio": "prisma studio",
-    "vercel-build": "prisma generate && next build",
-    "postinstall": "prisma generate"
+    "vercel-build": "pnpm prisma:generate && next build",
+    "postinstall": "pnpm prisma:generate"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
