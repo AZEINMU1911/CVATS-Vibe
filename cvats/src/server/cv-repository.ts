@@ -50,7 +50,10 @@ export interface CvRepository {
 }
 
 const shouldUseMemory =
-  process.env.NODE_ENV === "test" || !process.env.DATABASE_URL;
+  process.env.NODE_ENV === "test" ||
+  !process.env.DATABASE_URL ||
+  (process.env.PRISMA_FORCE_MEMORY ?? "").toLowerCase() === "1" ||
+  (process.env.PRISMA_FORCE_MEMORY ?? "").toLowerCase() === "true";
 
 type CvWithSecureUrl = CV & { secureUrl?: string | null };
 
