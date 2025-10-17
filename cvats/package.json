@@ -13,7 +13,6 @@
     "verify": "npm run lint && npm run typecheck && npm run test && npm run e2e",
     "db:push": "prisma db push",
     "db:studio": "prisma studio",
-    "prisma:generate": "node ./scripts/prisma-generate.mjs",
     "vercel-build": "pnpm prisma:generate && next build",
     "postinstall": "pnpm prisma:generate"
   },
