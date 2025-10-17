@@ -22,7 +22,11 @@ export interface UserRepository {
   reset?: () => void;
 }
 
-const shouldUseMemory = process.env.NODE_ENV === "test" || !process.env.DATABASE_URL;
+const shouldUseMemory =
+  process.env.NODE_ENV === "test" ||
+  !process.env.DATABASE_URL ||
+  (process.env.PRISMA_FORCE_MEMORY ?? "").toLowerCase() === "1" ||
+  (process.env.PRISMA_FORCE_MEMORY ?? "").toLowerCase() === "true";
 
 const mapUser = (user: User): UserRecord => ({
   id: user.id,

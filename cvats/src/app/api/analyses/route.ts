@@ -2,10 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { cvRepository } from "@/server/cv-repository";
 import type { CvRecord } from "@/server/cv-repository";
-import {
-  analysisRepository,
-  type AnalysisHistoryRecord,
-} from "@/server/analysis-repository";
+import { analysisRepository, type AnalysisRecord } from "@/server/analysis-repository";
 import {
   analyzeWithGeminiFile,
   GeminiParseError,
@@ -83,7 +80,7 @@ const asFallbackReason = (value: string | null): FallbackReason | null => {
   return null;
 };
 
-const toApiResponse = (record: AnalysisHistoryRecord): ApiAnalysisResponse => ({
+const toApiResponse = (record: AnalysisRecord): ApiAnalysisResponse => ({
   id: record.id,
   cvId: record.cvId,
   atsScore: record.atsScore,
