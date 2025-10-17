@@ -4,7 +4,6 @@ import { cvRepository } from "@/server/cv-repository";
 import { validateFile } from "@/lib/validate-file";
 import { getAuthSession } from "@/lib/auth/session";
 import { uploadRawBuffer } from "@/server/cloudinary-upload";
-import { rememberUploadBytes } from "@/server/upload-buffer-cache";
 
 const validationMessages: Record<"invalid-type" | "file-too-large", string> = {
   "invalid-type": "File type is not allowed.",
@@ -83,8 +82,6 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "CLOUDINARY_UPLOAD_INVALID_DELIVERY" }, { status: 502 });
     }
 
-    rememberUploadBytes(publicId, buffer);
-
     const created = await cvRepository.createForUser(session.user.id, {
       fileName: fileEntry.name,
       fileUrl: secureUrl,
@@ -108,6 +105,7 @@ export async function POST(request: Request) {
     return NextResponse.json(
       {
         cv: created,
+        cvId: created.id,
         transient: {
           __bytes: buffer.toString("base64"),
           mimeType: inlineMimeType,
