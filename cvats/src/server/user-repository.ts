@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
-import type { User } from "@prisma/client";
-import { PrismaClient } from "@prisma/client";
+import type { PrismaClient, User } from "@prisma/client";
+import { createPrismaClient } from "@/server/prisma-client";
 
 export interface UserRecord {
   id: string;
@@ -34,7 +34,7 @@ const mapUser = (user: User): UserRecord => ({
 const createPrismaRepository = (): UserRepository => {
   const prismaGlobal = globalThis as typeof globalThis & { prismaInstance?: PrismaClient };
   if (!prismaGlobal.prismaInstance) {
-    prismaGlobal.prismaInstance = new PrismaClient();
+    prismaGlobal.prismaInstance = createPrismaClient();
   }
   const prisma = prismaGlobal.prismaInstance;
 
