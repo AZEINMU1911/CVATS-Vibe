@@ -29,7 +29,7 @@ declare module ".prisma/client/default" {
     uploadedAt: Date;
   }
 
-  export interface Analysis {
+  export interface AnalysisHistory {
     id: string;
     cvId: string;
     userId: string;
@@ -41,31 +41,24 @@ declare module ".prisma/client/default" {
     createdAt: Date;
   }
 
-  export type AnalysisHistory = Analysis;
-
   export class PrismaClient {
     constructor(): void;
     $disconnect(): Promise<void>;
     cV: {
-      findMany: (args: Record<string, unknown>) => Promise<CV[]>;
-      create: (args: Record<string, unknown>) => Promise<CV>;
-      findUnique: (args: Record<string, unknown>) => Promise<CV | null>;
-      delete: (args: Record<string, unknown>) => Promise<CV>;
-      update: (args: Record<string, unknown>) => Promise<CV>;
+      findMany: (...args: any[]) => Promise<CV[]>;
+      create: (...args: any[]) => Promise<CV>;
+      findUnique: (...args: any[]) => Promise<CV | null>;
+      delete: (...args: any[]) => Promise<CV>;
+      update: (...args: any[]) => Promise<CV>;
     };
     analysisHistory: {
-      create: (args: Record<string, unknown>) => Promise<AnalysisHistory>;
-      findFirst: (args: Record<string, unknown>) => Promise<AnalysisHistory | null>;
-      findMany: (args: Record<string, unknown>) => Promise<AnalysisHistory[]>;
-    };
-    analysis: {
-      create: (args: Record<string, unknown>) => Promise<Analysis>;
-      findFirst: (args: Record<string, unknown>) => Promise<Analysis | null>;
-      findMany: (args: Record<string, unknown>) => Promise<Analysis[]>;
+      create: (...args: any[]) => Promise<AnalysisHistory>;
+      findFirst: (...args: any[]) => Promise<AnalysisHistory | null>;
+      findMany: (...args: any[]) => Promise<AnalysisHistory[]>;
     };
     user: {
-      findUnique: (args: Record<string, unknown>) => Promise<User | null>;
-      create: (args: Record<string, unknown>) => Promise<User>;
+      findUnique: (...args: any[]) => Promise<User | null>;
+      create: (...args: any[]) => Promise<User>;
     };
   }
 }

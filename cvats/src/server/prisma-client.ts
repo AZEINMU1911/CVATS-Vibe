@@ -9,7 +9,7 @@ const loadPrismaConstructor = (): PrismaClientConstructor => {
     return prismaCtor;
   }
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    // eslint-disable-next-line @typescript-eslint/no-var-requires, global-require
     const mod = require("@prisma/client") as { PrismaClient: PrismaClientConstructor };
     if (!mod?.PrismaClient) {
       throw new Error("PRISMA_CLIENT_EXPORT_MISSING");
