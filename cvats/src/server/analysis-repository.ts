@@ -1,5 +1,6 @@
 import type { AnalysisHistory } from "@prisma/client";
-import { PrismaClient } from "@prisma/client";
+import type { PrismaClient } from "@prisma/client";
+import { createPrismaClient } from "@/server/prisma-client";
 
 export interface AnalysisHistoryRecord {
   id: string;
@@ -86,7 +87,7 @@ const mapHistory = (history: AnalysisHistory): AnalysisHistoryRecord => ({
 const createPrismaRepository = (): AnalysisHistoryRepository => {
   const prismaGlobal = globalThis as typeof globalThis & { prismaInstance?: PrismaClient };
   if (!prismaGlobal.prismaInstance) {
-    prismaGlobal.prismaInstance = new PrismaClient();
+    prismaGlobal.prismaInstance = createPrismaClient();
   }
   const prisma = prismaGlobal.prismaInstance;
 
