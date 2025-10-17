@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import type { CV } from "@prisma/client";
-import { PrismaClient } from "@prisma/client";
+import type { CV, PrismaClient } from "@prisma/client";
+import { createPrismaClient } from "@/server/prisma-client";
 
 export interface CvRecord {
   id: string;
@@ -88,7 +88,7 @@ const mapCv = (record: CV): CvRecord => {
 const createPrismaRepository = (): CvRepository => {
   const prismaGlobal = globalThis as typeof globalThis & { prismaInstance?: PrismaClient };
   if (!prismaGlobal.prismaInstance) {
-    prismaGlobal.prismaInstance = new PrismaClient();
+    prismaGlobal.prismaInstance = createPrismaClient();
   }
   const prisma = prismaGlobal.prismaInstance;
 
