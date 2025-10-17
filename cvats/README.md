@@ -55,6 +55,8 @@ GEMINI_MAX_BACKOFF_MS=4000
 ANALYSIS_MAX_FILE_MB=10
 ```
 
+For offline builds or constrained CI runners, set `PRISMA_FORCE_MEMORY=1` to keep repositories in their in-memory mode and `DISABLE_REMOTE_FONTS=1` to bypass the Google Fonts downloader used by `next/font`.
+
 ### Testing Notes
 
 Vitest covers utility and API logic (including upload validation and persistence). Playwright validates marketing navigation and the server-owned Cloudinary stream → metadata flow using a stubbed upload response. CI executes linting, type checking, unit tests, and e2e tests on every push.
